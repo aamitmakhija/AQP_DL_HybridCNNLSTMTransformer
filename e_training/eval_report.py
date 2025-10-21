@@ -4,7 +4,6 @@ import os, json
 from pathlib import Path
 from typing import Dict, List, Tuple
 from copy import deepcopy
-
 import yaml
 import numpy as np
 import pandas as pd
@@ -27,10 +26,6 @@ def _deep_update(dst, src):
     return dst
 
 def _load_cfg() -> Dict:
-    """
-    Load configs/default.yaml, then merge any overlays in CONFIG env (comma-separated).
-    Mirrors other scripts so eval and train stay consistent.
-    """
     base = yaml.safe_load(open("configs/default.yaml"))
     cfg_env = os.environ.get("CONFIG")
     if not cfg_env:
@@ -88,7 +83,6 @@ def _read_split(base: Path, name: str, needed: set[str], time_col: str) -> pd.Da
     p = base / f"{name}.parquet"
     if not p.exists():
         raise FileNotFoundError(f"{p} missing — run dataprep/scale_features.py first")
-    # Column-pruned read; also guard if time_col duplicated
     df = pd.read_parquet(p, columns=None)
     wanted = _ordered_unique([c for c in df.columns if c in (needed | {time_col})])
     df = df[wanted]
@@ -110,10 +104,8 @@ def _sanitize_X_cols(
     X_cols_lock: List[str],
 ) -> List[str]:
     non_feature = {station_col, time_col, y_col}
-    # keep only those present in all splits and not id/time/target
     x = [c for c in X_cols_lock if c not in non_feature
          and c in tr_df.columns and c in va_df.columns and c in te_df.columns]
-    # keep only numeric (using train dtypes; coercion will handle remainder at read-time)
     x = [c for c in x if pd.api.types.is_numeric_dtype(tr_df[c])]
     if not x:
         raise RuntimeError("After sanitizing, X_cols is empty. Check your features/scaling step.")
@@ -134,11 +126,8 @@ def _make_windows_per_station(
     all_X, all_y, stations = [], [], []
     for sid, g in df.groupby(station_col, sort=False):
         g = g.sort_values(time_col).reset_index(drop=True)
-
-        # numeric & non-finite guard
         X = g[X_cols].apply(pd.to_numeric, errors="coerce").to_numpy(float, copy=False)
         y = pd.to_numeric(g[y_col], errors="coerce").to_numpy(float, copy=False)
-
         n = len(g)
         max_start = n - lookback - horizon + 1
         if max_start <= 0:
@@ -148,7 +137,6 @@ def _make_windows_per_station(
             tgt = end - 1 + horizon
             x_seq = X[start:end, :]
             y_val = y[tgt]
-            # strict: drop any non-finite values
             if not (np.isfinite(x_seq).all() and np.isfinite(y_val)):
                 continue
             all_X.append(x_seq)
@@ -181,7 +169,7 @@ def _print_split_diag(name: str, df: pd.DataFrame, station_col: str, time_col: s
     xs_sample = X_cols[: min(8, len(X_cols))]
     x_nan_map = {c: float(df[c].isna().mean()) for c in xs_sample if c in df.columns}
     print(f"[{name}] rows={n_rows:,}  stations={n_stations}  time=[{t_min} → {t_max}]")
-    print(f"[{name}] NaN rate: y]={y_nan:.3f}  X(sample)={{{', '.join(f'{k}:{v:.3f}' for k,v in x_nan_map.items())}}}")
+    print(f"[{name}] NaN rate: y={y_nan:.3f}  X(sample)={{{', '.join(f'{k}:{v:.3f}' for k,v in x_nan_map.items())}}}")
     for H in horizons:
         ub = _upper_bound_windows(df, station_col, time_col, lookback, int(H), stride)
         print(f"[{name}] Upper-bound windows (no NaN) H={H}: ~{ub:,}")
@@ -208,13 +196,10 @@ def _predict(model: nn.Module, X: np.ndarray, device: torch.device, batch_size: 
     bad_total = 0
     for i in range(0, N, batch_size):
         xb_np = X[i:i+batch_size]
-        # Count non-finite before sanitizing (for debug)
         bad = np.size(xb_np) - np.isfinite(xb_np).sum()
         bad_total += int(bad)
-        # Replace non-finite and clamp
-        xb_np = np.nan_to_num(xb_np, copy=False)     # NaN->0, ±Inf->±large finite
-        np.clip(xb_np, -1e6, 1e6, out=xb_np)         # wide clamp just in case
-    
+        xb_np = np.nan_to_num(xb_np, copy=False)
+        np.clip(xb_np, -1e6, 1e6, out=xb_np)
         xb = torch.from_numpy(xb_np).to(device, dtype=torch.float32)
         pb = model(xb).detach().cpu().numpy()
         preds.append(pb)
@@ -273,9 +258,9 @@ def main():
     # Diagnostics on test
     _print_split_diag("test", te_df, station_col, time_col, y_col, X_cols, lookback, horizons, stride)
 
-    eval_cfg         = _require(cfg, ["eval"])
-    want_per_station = bool(eval_cfg.get("per_station", True))
-    save_preds       = bool(eval_cfg.get("save_preds", False))
+    eval_cfg        = _require(cfg, ["eval"])
+    want_per_station= bool(eval_cfg.get("per_station", True))
+    save_preds      = bool(eval_cfg.get("save_preds", False))
 
     reports_dir = art_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -294,13 +279,13 @@ def main():
     ffn_dropout  = float(_require(mh, ["ffn_dropout"]))
     pool         = str(mh.get("pool", "gap"))
     posenc       = str(mh.get("posenc", "sin"))
-    ln_eps       = float(mh.get("ln_eps", 1e-5))  # optional stabilization, present if added in training
+    ln_eps       = float(mh.get("ln_eps", 1e-5))  # optional
 
     print()
     for H in horizons:
         print(f"[eval] Horizon H={H}")
 
-        # Build model with input_dim=len(X_cols) (must match training input feature count)
+        # Build model with input_dim=len(X_cols)
         try:
             model = HybridEncoder(
                 in_dim=len(X_cols),
@@ -315,10 +300,9 @@ def main():
                 ffn_dropout=ffn_dropout,
                 pool=pool,
                 posenc=posenc,
-                ln_eps=ln_eps,  # only effective if HybridEncoder supports it
+                ln_eps=ln_eps,
             ).to(device)
         except TypeError:
-            # If training HybridEncoder has no ln_eps arg, rebuild without it
             model = HybridEncoder(
                 in_dim=len(X_cols),
                 cnn_channels=cnn_channels,
@@ -344,10 +328,7 @@ def main():
 
         print(f"[load] {ckpt}")
         state = torch.load(ckpt, map_location=device)
-        # support raw state_dict or {"state_dict":...}
         state_dict = state["state_dict"] if (isinstance(state, dict) and "state_dict" in state) else state
-
-        # strict load first; if shape mismatch (e.g., different in_dim), print warning and retry non-strict
         try:
             model.load_state_dict(state_dict, strict=True)
         except RuntimeError as e:
@@ -359,35 +340,44 @@ def main():
             if missing or unexpected:
                 print(f"[load/info] missing={missing}  unexpected={unexpected}")
 
-        # Rebuild test windows for this horizon (primary path)
+        # Primary: rebuild test windows for this horizon
         X, y, stations = _make_windows_per_station(
             te_df, station_col, time_col, X_cols, y_col,
             lookback=lookback, horizon=int(H), stride=stride
         )
         print(f"[windows] rebuilt test windows: {len(X)}  (stations: {len(set(stations))})")
 
+        
         # Fallback: use prebuilt NPZ shards if rebuild yields 0
         used_fallback = False
         if len(X) == 0:
             npz_dir = (art_dir / seq_out_dir) / "test" / f"h={int(H)}"
             shards = sorted(npz_dir.glob("shard_*.npz"))
             if shards:
-                X_list, y_list = [], []
+                X_list, y_list, sid_list = [], [], []
                 for s in shards:
                     with np.load(s, allow_pickle=False) as z:
                         X_list.append(z["X"].astype(np.float32, copy=False))
                         y_arr = z["y"]
                         y_list.append(y_arr if y_arr.ndim == 1 else y_arr.squeeze(-1))
+                        # NEW: pull station ids if present
+                        if "sid" in z.files:
+                            sid = z["sid"]
+                            # ensure python strs
+                            sid = sid.astype(str) if sid.dtype.kind in "SU" else sid
+                            sid_list.extend([str(x) for x in sid.tolist()])
                 X = np.concatenate(X_list, axis=0) if X_list else np.empty((0, lookback, len(X_cols)), np.float32)
                 y = np.concatenate(y_list, axis=0) if y_list else np.empty((0,), np.float32)
-                stations = []  # shards don’t carry station ids
+                stations = sid_list if sid_list else []
                 used_fallback = True
-                print(f"[windows/fallback] loaded from shards: {len(X)} windows @ {npz_dir}")
+                print(f"[windows/fallback] loaded from shards: {len(X)} windows @ {npz_dir} "
+                      f"{'(with station_id)' if stations else '(no station_id)'}")
             else:
                 print(f"[windows] no windows and no shards at {npz_dir}")
                 report["overall"][str(H)] = {m: float("nan") for m in ("rmse","mae","smape","r2")}
                 report["per_station"][str(H)] = {}
                 continue
+            
 
         preds = _predict(model, X, device, batch)
 
@@ -405,21 +395,46 @@ def main():
         report["overall"][str(H)] = overall
         print(f"[overall@H={H}] " + "  ".join(f"{k}={v:.4f}" for k, v in overall.items()))
 
-        # Per-station metrics only if we have station ids (not available in shard fallback)
-        if want_per_station and not used_fallback:
+        # ----- per-station scoring & CSV -----
+        if want_per_station and stations:
             ps: Dict[str, Dict[str, float]] = {}
-            y_np, p_np = np.asarray(y), np.asarray(preds)
+            # keep same finite mask for station slicing
             stations_np = np.asarray(stations)
-            for sid in np.unique(stations_np):
-                m = (stations_np == sid)
-                m = m & np.isfinite(y_np) & np.isfinite(p_np)
-                if m.any():
-                    ps[str(sid)] = {k: METRICS[k](y_np[m], p_np[m]) for k in METRICS}
-            report["per_station"][str(H)] = ps
-            print(f"[per-station@H={H}] computed for {len(ps)} station(s)")
-        elif want_per_station and used_fallback:
-            report["per_station"][str(H)] = {}
-            print("[per-station] skipped (shard fallback has no station ids)")
+            yy_all, pp_all = yy, pp  # already masked above
+            st_mask_all = stations_np[mask] if len(stations_np) == len(y) else None
+
+            if st_mask_all is not None:
+                for sid in np.unique(st_mask_all):
+                    m = (st_mask_all == sid)
+                    if m.any():
+                        ps[str(sid)] = {k: METRICS[k](yy_all[m], pp_all[m]) for k in METRICS}
+
+                report["per_station"][str(H)] = ps
+                print(f"[per-station@H={H}] computed for {len(ps)} station(s)")
+
+                # Write CSV
+                df_ps = (pd.DataFrame.from_dict(ps, orient="index")
+                         .rename_axis("station_id").reset_index())
+                out_ps = reports_dir / f"per_station_H{int(H)}.csv"
+                df_ps.to_csv(out_ps, index=False)
+                print(f"[save] per-station metrics → {out_ps} ({len(df_ps)} rows)")
+
+                # Top/bottom by RMSE (console)
+                if "rmse" in df_ps.columns and len(df_ps) > 0:
+                    k = min(10, len(df_ps))
+                    print(f"[per-station/top {k}] lowest RMSE:")
+                    print(df_ps.sort_values("rmse").head(k).to_string(index=False))
+                    print(f"[per-station/bottom {k}] highest RMSE:")
+                    print(df_ps.sort_values("rmse", ascending=False).head(k).to_string(index=False))
+            else:
+                # can happen if shards lacked sid
+                report["per_station"][str(H)] = {}
+                print("[per-station] skipped (no station ids in windows)")
+        else:
+            # preserve existing behavior/print
+            if want_per_station and not stations:
+                report["per_station"][str(H)] = {}
+                print("[per-station] skipped (no station ids)")
 
         if save_preds:
             out_csv = reports_dir / f"preds_H{int(H)}.csv"
@@ -428,6 +443,8 @@ def main():
                 df_out.insert(0, "station_id", stations)
             df_out.to_csv(out_csv, index=False)
             print(f"[save] wrote {out_csv}  ({len(df_out)} rows)")
+        
+        
 
     out_path = reports_dir / "eval_report.json"
     out_path.write_text(json.dumps(report, indent=2))

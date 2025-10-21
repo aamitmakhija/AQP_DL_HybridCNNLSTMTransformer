@@ -100,5 +100,34 @@ fi
 echo "[eval_report] Launching: ${PY} -m e_training.eval_report"
 CONFIG="${CONFIG}" "${PY}" -m e_training.eval_report
 
+
+# ---------- optional post-eval: inspect one station’s top errors ----------
+# Usage: STATION_ID=1001 ./a_scripts/05_eval_report.sh
+if [[ -n "${STATION_ID:-}" ]]; then
+  echo "[post] Inspecting station_id=${STATION_ID}"
+  CONFIG="${CONFIG}" "${PY}" - <<'PY'
+import os, pandas as pd, sys
+sid = os.environ.get("STATION_ID")
+p = "experiments/artifacts/reports/preds_H1.csv"
+try:
+    df = pd.read_csv(p)
+except FileNotFoundError:
+    print(f"[post] {p} not found (set eval.save_preds: true in CONFIG).")
+    sys.exit(0)
+
+if "station_id" in df.columns:
+    sub = (df[df["station_id"] == sid]
+           .assign(abs_err=lambda x: (x.y_pred - x.y_true).abs()))
+    out = f"experiments/artifacts/reports/residuals_{sid}_H1_top10.csv"
+    (sub.sort_values("abs_err", ascending=False)
+        .head(10)
+        .to_csv(out, index=False))
+    print(f"[post] Wrote {out}")
+else:
+    print("[post] preds_H1.csv has no station_id column.")
+PY
+fi
+
+
 echo
 echo "******************************** eval report done ********************************"

@@ -141,22 +141,24 @@ def _build_split_for_h(
 ) -> Dict:
     _ensure_dir(out_split_dir)
     shard_id = 0
-    buf_X, buf_y = [], []
+    buf_X, buf_y, buf_sid = [], [], []
     np_dtype = np.dtype(dtype).name
 
-    for _, g in frame.groupby(station_col, sort=False):
+    for sid, g in frame.groupby(station_col, sort=False):
         g = g.sort_values(time_col).reset_index(drop=True)
         for x_seq, y_val in _sequence_iter(g, X_cols, y_col, lookback, horizon, stride, dropna):
             buf_X.append(x_seq.astype(np_dtype, copy=False))
             buf_y.append(np.array(y_val, dtype=np_dtype))
+            buf_sid.append(str(sid))  # NEW: track station id per window
             if len(buf_X) >= shard_size:
                 shard_id += 1
                 np.savez_compressed(
                     out_split_dir / f"shard_{shard_id:03d}.npz",
                     X=np.stack(buf_X, axis=0).astype(np_dtype, copy=False),
                     y=np.asarray(buf_y, dtype=np_dtype),
+                    sid=np.asarray(buf_sid, dtype="U32"),  # NEW
                 )
-                buf_X.clear(); buf_y.clear()
+                buf_X.clear(); buf_y.clear(); buf_sid.clear()
 
     if buf_X:
         shard_id += 1
@@ -164,8 +166,9 @@ def _build_split_for_h(
             out_split_dir / f"shard_{shard_id:03d}.npz",
             X=np.stack(buf_X, axis=0).astype(np_dtype, copy=False),
             y=np.asarray(buf_y, dtype=np_dtype),
+            sid=np.asarray(buf_sid, dtype="U32"),  # NEW
         )
-        buf_X.clear(); buf_y.clear()
+        buf_X.clear(); buf_y.clear(); buf_sid.clear()
 
     shards = sorted([p.name for p in out_split_dir.glob("shard_*.npz")])
     shard_counts, total = [], 0
@@ -186,6 +189,7 @@ def _build_split_for_h(
         "total_windows": total,
         "X_dim": {"T": lookback, "F": len(X_cols)},
         "y_dim": 1,
+        "has_sid": True,  # NEW — signals that NPZ files include 'sid'
         "shards": shard_counts,
         "paths": {"dir": str(out_split_dir)},
     }

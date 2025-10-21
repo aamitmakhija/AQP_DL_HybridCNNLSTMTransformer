@@ -1,8 +1,33 @@
-data/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.ipynb_checkpoints/
+
+# Virtual envs
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Build & logs
+logs/
+*.log
+
+# Project artifacts
 experiments/artifacts/
-models/
-reports/
+experiments/artifacts/**
+
+# Raw or intermediate data
+raw_data/
+data/
 *.parquet
-*.pt
-*.pth
-*.pkl
+*.npz
+*.csv
+
+# VSCode / IDE
+.vscode/
+.idea/
