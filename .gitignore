@@ -31,3 +31,25 @@ data/
 # VSCode / IDE
 .vscode/
 .idea/
+
+
+cat > .gitignore <<'EOF'
+# data + artifacts
+raw_data/
+experiments/artifacts/
+experiments/**/seq/
+experiments/**/models/
+experiments/**/reports/
+*.npz
+*.parquet
+*.pt
+*.csv
+*.feather
+*.arrow
+
+# caches & env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+EOF
