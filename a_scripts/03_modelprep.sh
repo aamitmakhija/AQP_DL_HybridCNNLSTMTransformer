@@ -29,7 +29,6 @@ echo "[03_modelprep] Python: $("$PY" -V) at ${PY}"
 # -----------------------------
 read -r ART_DIR SEQ_OUT_DIR_REL FEATS_REL < <("$PY" - <<'PY'
 import os, yaml
-from copy import deepcopy
 
 def deep_update(dst, src):
     for k, v in (src or {}).items():
@@ -74,7 +73,7 @@ echo "[03_modelprep] seq_dir=${SEQ_DIR}"
 echo "[03_modelprep] scaled_dir=${SCALED_DIR}"
 
 # -----------------------------
-# Ensure scaled features exist (per-station scaler)
+# Ensure scaled features exist (trust dataprep/scaler as the source of truth)
 # -----------------------------
 NEED_SCALE=0
 for SPL in train val test; do
@@ -125,6 +124,16 @@ else
   - d_modelprep/*make_windows*.py )" >&2
     exit 1
   fi
+fi
+
+# -----------------------------
+# DO NOT touch the feature lock here
+# (feature_list.json is authored by the scaler/dataprep step)
+# -----------------------------
+if [[ -f "${ART_DIR}/features_locked/feature_list.json" ]]; then
+  echo "[03_modelprep] Using existing feature lock at ${ART_DIR}/features_locked/feature_list.json"
+else
+  echo "[03_modelprep] WARNING: feature lock missing; ensure dataprep/scaler ran successfully." >&2
 fi
 
 # -----------------------------

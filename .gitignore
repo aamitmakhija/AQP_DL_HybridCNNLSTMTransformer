@@ -1,1 +1,14 @@
-(paste content above)
+# data & artifacts
+raw_data/
+experiments/
+data/
+*.parquet
+*.npz
+*.csv
+
+# envs & local
+.venv/
+venv/
+.vscode/
+.DS_Store
+logs/

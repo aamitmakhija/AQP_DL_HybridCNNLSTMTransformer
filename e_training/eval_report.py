@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
 # e_training/eval_report.py
 from __future__ import annotations
 import os, json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 from copy import deepcopy
+
 import yaml
 import numpy as np
 import pandas as pd
@@ -17,7 +19,7 @@ from e_training.train_hybrid import HybridEncoder
 
 
 # ---------------- config helpers ----------------
-def _deep_update(dst, src):
+def _deep_update(dst: Dict, src: Dict | None):
     for k, v in (src or {}).items():
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
             _deep_update(dst[k], v)
@@ -86,6 +88,7 @@ def _read_split(base: Path, name: str, needed: set[str], time_col: str) -> pd.Da
     df = pd.read_parquet(p, columns=None)
     wanted = _ordered_unique([c for c in df.columns if c in (needed | {time_col})])
     df = df[wanted]
+    # de-duplicate time column if present multiple times under different aliases
     if (df.columns == time_col).sum() > 1:
         first = df.loc[:, df.columns == time_col].iloc[:, 0]
         df = df.drop(columns=[time_col])
@@ -102,13 +105,14 @@ def _sanitize_X_cols(
     time_col: str,
     y_col: str,
     X_cols_lock: List[str],
+    exclude_cols: Set[str],   # ← NEW: respect training-time exclusions
 ) -> List[str]:
-    non_feature = {station_col, time_col, y_col}
+    non_feature = {station_col, time_col, y_col} | set(exclude_cols)
     x = [c for c in X_cols_lock if c not in non_feature
          and c in tr_df.columns and c in va_df.columns and c in te_df.columns]
     x = [c for c in x if pd.api.types.is_numeric_dtype(tr_df[c])]
     if not x:
-        raise RuntimeError("After sanitizing, X_cols is empty. Check your features/scaling step.")
+        raise RuntimeError("After sanitizing, X_cols is empty. Check your features/scaling/exclusions.")
     return x
 
 
@@ -175,7 +179,7 @@ def _print_split_diag(name: str, df: pd.DataFrame, station_col: str, time_col: s
         print(f"[{name}] Upper-bound windows (no NaN) H={H}: ~{ub:,}")
 
 
-# ---------------- checkpoint finder ----------------
+# ---------------- checkpoint + forgiving load helpers ----------------
 def _find_checkpoint(model_root: Path, H: int) -> Path | None:
     exact = model_root / f"hybrid_h{int(H)}.pt"
     if exact.exists():
@@ -185,6 +189,60 @@ def _find_checkpoint(model_root: Path, H: int) -> Path | None:
         return None
     cands.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return cands[0]
+
+def _load_train_time_params(model_root: Path, H: int) -> dict | None:
+    p = model_root / f"hybrid_h{int(H)}_train_summary.json"
+    if not p.exists():
+        return None
+    try:
+        meta = json.loads(p.read_text())
+        return meta.get("params", None)
+    except Exception:
+        return None
+
+def _filter_state_dict(sd: dict, *, drop_prefixes: tuple[str, ...]) -> dict:
+    return {k: v for k, v in sd.items() if not any(k.startswith(px) for px in drop_prefixes)}
+
+def _copy_overlap(dst_tensor: torch.Tensor, src_tensor: torch.Tensor) -> None:
+    if dst_tensor.shape == src_tensor.shape:
+        dst_tensor.copy_(src_tensor); return
+    dshape, sshape = list(dst_tensor.shape), list(src_tensor.shape)
+    dims = min(len(dshape), len(sshape))
+    slices = tuple(slice(0, min(dshape[i], sshape[i])) for i in range(dims))
+    try:
+        dst_tensor[slices].copy_(src_tensor[slices])
+    except Exception:
+        pass
+
+def load_state_dict_forgiving(model: nn.Module, state_dict: dict,
+                              drop_prefixes: tuple[str, ...] = ("sid_emb",)) -> tuple[list[str], list[str], list[str]]:
+    """
+    Forgiving loader:
+      * Drop keys with disallowed prefixes (e.g., 'sid_emb').
+      * For size mismatches, copy overlapping slices into model tensors.
+    Returns (loaded_ok, skipped_size_mismatch, missing_in_ckpt).
+    """
+    sd = _filter_state_dict(state_dict, drop_prefixes=drop_prefixes)
+    model_sd = model.state_dict()
+    loaded_ok, skipped_mm, missing = [], [], []
+
+    # copy what we can
+    for k, v in sd.items():
+        if k in model_sd:
+            try:
+                _copy_overlap(model_sd[k], v)
+                loaded_ok.append(k)
+            except Exception:
+                skipped_mm.append(k)
+
+    # track missing
+    for k in model_sd.keys():
+        if k not in sd:
+            missing.append(k)
+
+    model.load_state_dict(model_sd, strict=False)
+    return loaded_ok, skipped_mm, missing
+
 
 @torch.no_grad()
 def _predict(model: nn.Module, X: np.ndarray, device: torch.device, batch_size: int) -> np.ndarray:
@@ -251,8 +309,13 @@ def main():
         df[station_col] = df[station_col].astype(str)
         df[time_col]    = pd.to_datetime(df[time_col], errors="coerce")
 
+    # === NEW: build eval-time exclusion set to mirror training ===
+    exclude_cols_cfg = set((_require(cfg, ["scaling"]).get("exclude_columns", []) or []))
+    drop_feats_cfg   = set((_require(cfg, ["missing"]).get("drop_features", []) or []))
+    exclude_all      = exclude_cols_cfg | drop_feats_cfg
+
     # Sanitize X cols to match windowing/training
-    X_cols = _sanitize_X_cols(tr_df, va_df, te_df, station_col, time_col, y_col, X_cols_lock)
+    X_cols = _sanitize_X_cols(tr_df, va_df, te_df, station_col, time_col, y_col, X_cols_lock, exclude_all)
     print(f"\n[eval] Using {len(X_cols)} feature(s): {X_cols}\n")
 
     # Diagnostics on test
@@ -266,7 +329,7 @@ def main():
     reports_dir.mkdir(parents=True, exist_ok=True)
     report = {"overall": {}, "per_station": {}, "horizons": [int(h) for h in horizons]}
 
-    # --- model hyperparams ONLY from YAML (keep parity with training) ---
+    # --- YAML model hyperparams (defaults) ---
     mh = _require(cfg, ["model", "hybrid"])
     cnn_channels = list(_require(mh, ["cnn_channels"]))
     cnn_kernels  = list(_require(mh, ["cnn_kernels"]))
@@ -279,46 +342,13 @@ def main():
     ffn_dropout  = float(_require(mh, ["ffn_dropout"]))
     pool         = str(mh.get("pool", "gap"))
     posenc       = str(mh.get("posenc", "sin"))
-    ln_eps       = float(mh.get("ln_eps", 1e-5))  # optional
+    ln_eps       = float(mh.get("ln_eps", 1e-6))  # optional
 
     print()
     for H in horizons:
         print(f"[eval] Horizon H={H}")
 
-        # Build model with input_dim=len(X_cols)
-        try:
-            model = HybridEncoder(
-                in_dim=len(X_cols),
-                cnn_channels=cnn_channels,
-                cnn_kernels=cnn_kernels,
-                cnn_dropout=cnn_dropout,
-                d_model=d_model,
-                nhead=nhead,
-                num_layers=num_layers,
-                ff_mult=ff_mult,
-                attn_dropout=attn_dropout,
-                ffn_dropout=ffn_dropout,
-                pool=pool,
-                posenc=posenc,
-                ln_eps=ln_eps,
-            ).to(device)
-        except TypeError:
-            model = HybridEncoder(
-                in_dim=len(X_cols),
-                cnn_channels=cnn_channels,
-                cnn_kernels=cnn_kernels,
-                cnn_dropout=cnn_dropout,
-                d_model=d_model,
-                nhead=nhead,
-                num_layers=num_layers,
-                ff_mult=ff_mult,
-                attn_dropout=attn_dropout,
-                ffn_dropout=ffn_dropout,
-                pool=pool,
-                posenc=posenc,
-            ).to(device)
-        model.eval()
-
+        # ---------- locate checkpoint ----------
         ckpt = _find_checkpoint(model_root, int(H))
         if ckpt is None:
             print(f"[warn] no checkpoint found under {model_root}; skipping H={H}")
@@ -326,59 +356,114 @@ def main():
             report["per_station"][str(H)] = {}
             continue
 
+        # ---------- auto-use train-time params if present ----------
+        train_time = _load_train_time_params(model_root, int(H))
+        mh_effective = dict(
+            cnn_channels=cnn_channels, cnn_kernels=cnn_kernels, cnn_dropout=cnn_dropout,
+            d_model=d_model, nhead=nhead, num_layers=num_layers, ff_mult=ff_mult,
+            attn_dropout=attn_dropout, ffn_dropout=ffn_dropout, pool=pool, posenc=posenc,
+            ln_eps=ln_eps,
+        )
+        if train_time:
+            print(f"[eval] loaded train-time model params from hybrid_h{H}_train_summary.json")
+            for k in mh_effective.keys():
+                if k in train_time:
+                    mh_effective[k] = train_time[k]
+
+        # ---------- build model with effective params ----------
+        try:
+            model = HybridEncoder(
+                in_dim=len(X_cols),
+                cnn_channels=list(mh_effective["cnn_channels"]),
+                cnn_kernels=list(mh_effective["cnn_kernels"]),
+                cnn_dropout=float(mh_effective["cnn_dropout"]),
+                d_model=int(mh_effective["d_model"]),
+                nhead=int(mh_effective["nhead"]),
+                num_layers=int(mh_effective["num_layers"]),
+                ff_mult=int(mh_effective["ff_mult"]),
+                attn_dropout=float(mh_effective["attn_dropout"]),
+                ffn_dropout=float(mh_effective["ffn_dropout"]),
+                pool=str(mh_effective.get("pool", "gap")),
+                posenc=str(mh_effective.get("posenc", "sin")),
+                ln_eps=float(mh_effective.get("ln_eps", 1e-6)),
+            ).to(device)
+        except TypeError:
+            # Backward-compat for older HybridEncoder signature without ln_eps
+            model = HybridEncoder(
+                in_dim=len(X_cols),
+                cnn_channels=list(mh_effective["cnn_channels"]),
+                cnn_kernels=list(mh_effective["cnn_kernels"]),
+                cnn_dropout=float(mh_effective["cnn_dropout"]),
+                d_model=int(mh_effective["d_model"]),
+                nhead=int(mh_effective["nhead"]),
+                num_layers=int(mh_effective["num_layers"]),
+                ff_mult=int(mh_effective["ff_mult"]),
+                attn_dropout=float(mh_effective["attn_dropout"]),
+                ffn_dropout=float(mh_effective["ffn_dropout"]),
+                pool=str(mh_effective.get("pool", "gap")),
+                posenc=str(mh_effective.get("posenc", "sin")),
+            ).to(device)
+
+        model.eval()
+
+        # ---------- load checkpoint (strict → forgiving with partial copy) ----------
         print(f"[load] {ckpt}")
         state = torch.load(ckpt, map_location=device)
         state_dict = state["state_dict"] if (isinstance(state, dict) and "state_dict" in state) else state
+
         try:
             model.load_state_dict(state_dict, strict=True)
-        except RuntimeError as e:
-            print(f"[load/warn] strict load failed: {e}")
-            try:
-                missing, unexpected = model.load_state_dict(state_dict, strict=False)
-            except Exception as e2:
-                raise RuntimeError(f"Non-strict load also failed: {e2}") from e2
-            if missing or unexpected:
-                print(f"[load/info] missing={missing}  unexpected={unexpected}")
+            print("[load] strict load OK")
+        except RuntimeError as e_strict:
+            print(f"[load/warn] strict load failed: {e_strict}")
+            loaded_ok, skipped_mm, skipped_missing = load_state_dict_forgiving(
+                model, state_dict, drop_prefixes=("sid_emb",)
+            )
+            print(f"[load/info] forgiving load: ok={len(loaded_ok)}  partial/mismatch={len(skipped_mm)}  missing={len(skipped_missing)}")
+            if len(loaded_ok) == 0:
+                raise RuntimeError(
+                    "Non-strict load failed even after forgiving adapter. "
+                    "This usually means the checkpoint architecture (e.g. d_model/cnn_channels) "
+                    "is incompatible with this model."
+                )
 
-        # Primary: rebuild test windows for this horizon
-        X, y, stations = _make_windows_per_station(
-            te_df, station_col, time_col, X_cols, y_col,
-            lookback=lookback, horizon=int(H), stride=stride
-        )
-        print(f"[windows] rebuilt test windows: {len(X)}  (stations: {len(set(stations))})")
-
-        
-        # Fallback: use prebuilt NPZ shards if rebuild yields 0
+        # ---------- prefer shard path to avoid rebuild stalls ----------
         used_fallback = False
-        if len(X) == 0:
-            npz_dir = (art_dir / seq_out_dir) / "test" / f"h={int(H)}"
-            shards = sorted(npz_dir.glob("shard_*.npz"))
-            if shards:
-                X_list, y_list, sid_list = [], [], []
-                for s in shards:
-                    with np.load(s, allow_pickle=False) as z:
-                        X_list.append(z["X"].astype(np.float32, copy=False))
-                        y_arr = z["y"]
-                        y_list.append(y_arr if y_arr.ndim == 1 else y_arr.squeeze(-1))
-                        # NEW: pull station ids if present
-                        if "sid" in z.files:
-                            sid = z["sid"]
-                            # ensure python strs
-                            sid = sid.astype(str) if sid.dtype.kind in "SU" else sid
-                            sid_list.extend([str(x) for x in sid.tolist()])
-                X = np.concatenate(X_list, axis=0) if X_list else np.empty((0, lookback, len(X_cols)), np.float32)
-                y = np.concatenate(y_list, axis=0) if y_list else np.empty((0,), np.float32)
-                stations = sid_list if sid_list else []
-                used_fallback = True
-                print(f"[windows/fallback] loaded from shards: {len(X)} windows @ {npz_dir} "
-                      f"{'(with station_id)' if stations else '(no station_id)'}")
-            else:
+        npz_dir = (art_dir / seq_out_dir) / "test" / f"h={int(H)}"
+        shards = sorted(npz_dir.glob("shard_*.npz"))
+
+        X = y = stations = None
+        if shards:
+            X_list, y_list, sid_list = [], [], []
+            for s in shards:
+                with np.load(s, allow_pickle=False) as z:
+                    X_list.append(z["X"].astype(np.float32, copy=False))
+                    y_arr = z["y"]
+                    y_list.append(y_arr if y_arr.ndim == 1 else y_arr.squeeze(-1))
+                    if "sid" in z.files:
+                        sid = z["sid"]
+                        sid = sid.astype(str) if sid.dtype.kind in "SU" else sid
+                        sid_list.extend([str(x) for x in sid.tolist()])
+            X = np.concatenate(X_list, axis=0) if X_list else np.empty((0, lookback, len(X_cols)), np.float32)
+            y = np.concatenate(y_list, axis=0) if y_list else np.empty((0,), np.float32)
+            stations = sid_list if sid_list else []
+            used_fallback = True
+            print(f"[windows] loaded from shards: {len(X)} windows @ {npz_dir} "
+                  f"{'(with station_id)' if stations else '(no station_id)'}")
+        else:
+            # ---------- fallback: rebuild if shards missing ----------
+            X, y, stations = _make_windows_per_station(
+                te_df, station_col, time_col, X_cols, y_col,
+                lookback=lookback, horizon=int(H), stride=stride
+            )
+            print(f"[windows] rebuilt test windows: {len(X)}  (stations: {len(set(stations))})")
+            if len(X) == 0:
                 print(f"[windows] no windows and no shards at {npz_dir}")
                 report["overall"][str(H)] = {m: float("nan") for m in ("rmse","mae","smape","r2")}
                 report["per_station"][str(H)] = {}
                 continue
-            
 
+        # ---------- predict ----------
         preds = _predict(model, X, device, batch)
 
         # Finite-mask both arrays for metrics
@@ -396,45 +481,39 @@ def main():
         print(f"[overall@H={H}] " + "  ".join(f"{k}={v:.4f}" for k, v in overall.items()))
 
         # ----- per-station scoring & CSV -----
-        if want_per_station and stations:
+        if want_per_station and len(stations) == len(y):
             ps: Dict[str, Dict[str, float]] = {}
-            # keep same finite mask for station slicing
             stations_np = np.asarray(stations)
-            yy_all, pp_all = yy, pp  # already masked above
-            st_mask_all = stations_np[mask] if len(stations_np) == len(y) else None
+            st_mask_all = stations_np[mask]
+            for sid in np.unique(st_mask_all):
+                m = (st_mask_all == sid)
+                if m.any():
+                    ps[str(sid)] = {k: METRICS[k](yy[m], pp[m]) for k in METRICS}
 
-            if st_mask_all is not None:
-                for sid in np.unique(st_mask_all):
-                    m = (st_mask_all == sid)
-                    if m.any():
-                        ps[str(sid)] = {k: METRICS[k](yy_all[m], pp_all[m]) for k in METRICS}
+            report["per_station"][str(H)] = ps
+            print(f"[per-station@H={H}] computed for {len(ps)} station(s)")
 
-                report["per_station"][str(H)] = ps
-                print(f"[per-station@H={H}] computed for {len(ps)} station(s)")
+            # Write CSV
+            df_ps = (pd.DataFrame.from_dict(ps, orient="index")
+                     .rename_axis("station_id").reset_index())
+            out_ps = reports_dir / f"per_station_H{int(H)}.csv"
+            df_ps.to_csv(out_ps, index=False)
+            print(f"[save] per-station metrics → {out_ps} ({len(df_ps)} rows)")
 
-                # Write CSV
-                df_ps = (pd.DataFrame.from_dict(ps, orient="index")
-                         .rename_axis("station_id").reset_index())
-                out_ps = reports_dir / f"per_station_H{int(H)}.csv"
-                df_ps.to_csv(out_ps, index=False)
-                print(f"[save] per-station metrics → {out_ps} ({len(df_ps)} rows)")
-
-                # Top/bottom by RMSE (console)
-                if "rmse" in df_ps.columns and len(df_ps) > 0:
-                    k = min(10, len(df_ps))
-                    print(f"[per-station/top {k}] lowest RMSE:")
-                    print(df_ps.sort_values("rmse").head(k).to_string(index=False))
-                    print(f"[per-station/bottom {k}] highest RMSE:")
-                    print(df_ps.sort_values("rmse", ascending=False).head(k).to_string(index=False))
-            else:
-                # can happen if shards lacked sid
-                report["per_station"][str(H)] = {}
-                print("[per-station] skipped (no station ids in windows)")
+            # Top/bottom by RMSE (console)
+            if "rmse" in df_ps.columns and len(df_ps) > 0:
+                k = min(10, len(df_ps))
+                print(f"[per-station/top {k}] lowest RMSE:")
+                print(df_ps.sort_values("rmse").head(k).to_string(index=False))
+                print(f"[per-station/bottom {k}] highest RMSE:")
+                print(df_ps.sort_values("rmse", ascending=False).head(k).to_string(index=False))
         else:
-            # preserve existing behavior/print
             if want_per_station and not stations:
                 report["per_station"][str(H)] = {}
                 print("[per-station] skipped (no station ids)")
+            elif want_per_station and len(stations) != len(y):
+                report["per_station"][str(H)] = {}
+                print("[per-station] skipped (station ids length mismatch)")
 
         if save_preds:
             out_csv = reports_dir / f"preds_H{int(H)}.csv"
@@ -443,8 +522,6 @@ def main():
                 df_out.insert(0, "station_id", stations)
             df_out.to_csv(out_csv, index=False)
             print(f"[save] wrote {out_csv}  ({len(df_out)} rows)")
-        
-        
 
     out_path = reports_dir / "eval_report.json"
     out_path.write_text(json.dumps(report, indent=2))

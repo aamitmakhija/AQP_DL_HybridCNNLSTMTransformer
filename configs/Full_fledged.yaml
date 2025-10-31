@@ -2,12 +2,12 @@
 seed: 42
 
 dl:
-  device: mps
-  batch_size: 192            # per GPU; reduce if VRAM limited
-  num_workers: 2
+  device: cuda
+  batch_size: 1024            # per GPU; reduce if VRAM limited
+  num_workers: 8
   prefetch_factor: 2
-  pin_memory: false
-  persistent_workers: false
+  pin_memory: true
+  persistent_workers: true
   optimizer: adamw
   lr: 2.0e-4
   weight_decay: 1.0e-4
@@ -15,7 +15,7 @@ dl:
   patience: 80                # give long runs time to converge
   grad_clip: 1.0
   grad_accum_steps: 2         # effective batch = batch_size * world_size * accum
-  model_dir: models_dm96_noSid
+  model_dir: models_dm336_mh
   loss: huber                 # robust for spikes
   huber_delta: 12.0
   target_transform: log1p     # consistent with your pipeline
@@ -26,7 +26,7 @@ dl:
     min_lr: 1.0e-6
   amp:
     enabled: true
-    dtype: bf16               # CUDA fp16 is fast and stable
+    dtype: fp16               # CUDA fp16 is fast and stable
 
 # ==================== paths =====================
 paths:
@@ -181,8 +181,8 @@ sequence:
   train_split: train
   val_split: val
   test_split: test
-  lookback: 168
-  horizon: [1] ## 3, 6, 12, 24, 48]  # multi-horizon
+  lookback: 336
+  horizon: [1, 3, 6, 12, 24, 48]  # multi-horizon
   stride: 3
   dropna: true
   min_valid_ratio: 0.75
@@ -204,16 +204,16 @@ baselines:
 model:
   hybrid:
     use_station_embedding: true
-    station_embed_dim: 32
-    cnn_channels: [64, 64]
+    station_embed_dim: 64
+    cnn_channels: [96, 96]
     cnn_kernels: [7, 5]
     cnn_dropout: 0.05
-    d_model: 288
-    nhead: 6
-    num_layers: 5
+    d_model: 512
+    nhead: 8
+    num_layers: 8
     ff_mult: 4
-    attn_dropout: 0.10
-    ffn_dropout: 0.10
+    attn_dropout: 0.05
+    ffn_dropout: 0.05
     pool: gap
     posenc: sin
     use_lstm: true

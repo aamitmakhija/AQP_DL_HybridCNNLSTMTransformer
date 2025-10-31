@@ -1,68 +1,32 @@
 # c_dataprep/05_check_leakage.py
 from __future__ import annotations
 
-from common.config_loader import load_cfg, require, make_abs
-import os
-import re
-import json
+import json, re
 from pathlib import Path
-from copy import deepcopy
-from typing import Dict, Tuple, List
+from typing import Dict, List, Tuple
 
-import yaml
 import pandas as pd
-# ---------- config ----------
-def _deep_update(dst, src):
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            _deep_update(dst[k], v)
-        else:
-            dst[k] = v
-    return dst
 
-def _load_cfg() -> Dict:
-    base = yaml.safe_load(open("configs/default.yaml"))
-    cfg_env = os.environ.get("CONFIG")
-    if not cfg_env:
-        return base
-    merged = deepcopy(base)
-    for p in [s.strip() for s in cfg_env.split(",") if s.strip()]:
-        overlay = yaml.safe_load(open(p)) or {}
-        _deep_update(merged, overlay)
-    return merged
+from common.config_loader import load_cfg
 
 # ---------- helpers ----------
 def _pick_pm25_col(cols: List[str], cfg: Dict) -> str | None:
-    cand = set([c.lower() for c in cfg["data"]["headers"]["airquality"]["pm25"]])
-    fallbacks = ["pm25_concentration", "pm25", "pm2.5"]
-    for c in cols:
-        if c.lower() in cand or c.lower() in fallbacks:
-            return c
+    aliases = [c.lower() for c in cfg["data"]["headers"]["airquality"]["pm25"]]
+    lower = {c.lower(): c for c in cols}
+    for a in aliases:
+        if a in lower:
+            return lower[a]
     return None
 
 def _split_by_cutoffs(df: pd.DataFrame, time_col: str, train_end: str, val_end: str):
     df = df.copy()
     df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
-    df = df[df[time_col].dt.year != 1970].copy()
     tr_end = pd.to_datetime(train_end)
     v_end  = pd.to_datetime(val_end)
     train = df[df[time_col] <= tr_end].copy()
     val   = df[(df[time_col] > tr_end) & (df[time_col] <= v_end)].copy()
     test  = df[df[time_col] > v_end].copy()
     return train, val, test
-
-def _load_horizons_from_manifest(art_dir: Path) -> List[int] | None:
-    man = art_dir / "features" / "features_manifest.json"
-    if not man.exists():
-        return None
-    try:
-        j = json.load(open(man))
-        hz = j.get("horizons")
-        if isinstance(hz, list) and all(isinstance(x, int) for x in hz):
-            return hz
-    except Exception:
-        pass
-    return None
 
 def _infer_horizons_from_columns(cols: List[str], pm25_col: str | None) -> List[int]:
     if not pm25_col:
@@ -78,6 +42,15 @@ def _infer_horizons_from_columns(cols: List[str], pm25_col: str | None) -> List[
                 pass
     return sorted(found)
 
+def _collect_roll_windows(df: pd.DataFrame) -> List[int]:
+    wins = set()
+    pat = re.compile(r"_roll(\d+)h_(mean|std)$")
+    for c in df.columns:
+        m = pat.search(c)
+        if m:
+            wins.add(int(m.group(1)))
+    return sorted(wins)
+
 # ---------- checks ----------
 def _check_monotonic(df: pd.DataFrame, station_col: str, time_col: str) -> bool:
     ok = True
@@ -92,16 +65,11 @@ def _check_monotonic(df: pd.DataFrame, station_col: str, time_col: str) -> bool:
 def _check_lags(df: pd.DataFrame, station_col: str, time_col: str, pm25_col: str, horizons: List[int]) -> bool:
     ok = True
     base = df.sort_values([station_col, time_col]).copy()
-
     for h in horizons:
         col = f"{pm25_col}_lag{h}h"
         if col not in base.columns:
             continue
-        exp = (
-            base
-            .groupby(station_col)[pm25_col]
-            .transform(lambda s: s.shift(h))
-        )
+        exp = base.groupby(station_col)[pm25_col].transform(lambda s: s.shift(h))
         mask = base[col].notna() & exp.notna()
         diff = (base.loc[mask, col] - exp.loc[mask]).abs()
         if diff.max(skipna=True) > 1e-8:
@@ -113,23 +81,14 @@ def _check_lags(df: pd.DataFrame, station_col: str, time_col: str, pm25_col: str
         print("[OK] lags are past-only and match shifted base series (spot-checked)")
     return ok
 
-def _collect_roll_windows(df: pd.DataFrame) -> List[int]:
-    wins = set()
-    pat = re.compile(r"_roll(\d+)h_(mean|std)$")
-    for c in df.columns:
-        m = pat.search(c)
-        if m:
-            wins.add(int(m.group(1)))
-    return sorted(wins)
-
-def _check_rolls(df: pd.DataFrame, station_col: str, time_col: str) -> bool:
+def _check_rolls(df: pd.DataFrame, station_col: str, time_col: str, ddof: int = 1) -> bool:
     """
     Recompute rolling mean/std with groupby(...).transform(rolling(...))
-    so the result is index-aligned with df; compare where both sides are not NaN.
+    Compare where both sides are finite. ddof defaults to 1 to match pandas std().
     """
     ok = True
     base = df.sort_values([station_col, time_col]).copy()
-    num_cols = [c for c in base.select_dtypes(include="number").columns]
+    num_cols = base.select_dtypes(include="number").columns.tolist()
     windows = _collect_roll_windows(base)
 
     for col in num_cols:
@@ -149,8 +108,7 @@ def _check_rolls(df: pd.DataFrame, station_col: str, time_col: str) -> bool:
 
             if std_col in base.columns:
                 exp_std = base.groupby(station_col)[col].transform(
-                    # match pandas default ddof=1 used in feature gen
-                    lambda s: s.rolling(window=w, min_periods=max(1, w // 2)).std()
+                    lambda s: s.rolling(window=w, min_periods=max(1, w // 2)).std(ddof=ddof)
                 )
                 mask = base[std_col].notna() & exp_std.notna()
                 diff = (base.loc[mask, std_col] - exp_std.loc[mask]).abs()
@@ -184,35 +142,68 @@ def _check_splits(df: pd.DataFrame, time_col: str, train_end: str, val_end: str)
 
 # ---------- main ----------
 def main():
-    cfg = _load_cfg()
-    art = Path(cfg["paths"]["artifacts_dir"])
-    feats_pq = art / "features" / "dataset_features.parquet"
-    if not feats_pq.exists():
-        raise FileNotFoundError(f"{feats_pq} not found — run engineer_features.py first.")
+    cfg = load_cfg()
+
+    art_dir       = Path(cfg["paths"]["artifacts_dir"])
+    features_dir  = art_dir / cfg["paths"].get("features_dir", "features")
+
+    # features I/O from config
+    feats_out_cfg = cfg.get("features", {}).get("output", {})
+    feats_file    = feats_out_cfg.get("features_file", "dataset_features.parquet")
+    feats_fmt     = feats_out_cfg.get("format", "parquet")
+    manifest_file = feats_out_cfg.get("manifest_file", "features_manifest.json")
+
+    feats_path    = features_dir / feats_file
+    manifest_path = features_dir / manifest_file
+
+    if not feats_path.exists():
+        raise FileNotFoundError(f"{feats_path} not found — run engineer_features.py first.")
 
     time_col    = cfg["data"]["time_col"]
-    station_col = cfg["data"].get("id_col", "station_id")  # ← removed hard-coded id
+    station_col = cfg["data"].get("id_col", "station_id")
     train_end   = cfg["split"]["train_end"]
     val_end     = cfg["split"]["val_end"]
 
-    df = pd.read_parquet(feats_pq).copy()
+    # read features (respect format)
+    if feats_fmt == "parquet":
+        df = pd.read_parquet(feats_path)
+    elif feats_fmt == "feather":
+        df = pd.read_feather(feats_path)
+    elif feats_fmt == "csv":
+        df = pd.read_csv(feats_path)
+    else:
+        raise SystemExit(f"Unsupported features format: {feats_fmt}")
+
+    # normalize time + optional year drops
     df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
-    df = df[df[time_col].dt.year != 1970].copy()
+    drop_years = set(cfg.get("split", {}).get("drop_years", []))
+    if drop_years:
+        df = df[~df[time_col].dt.year.isin(drop_years)].copy()
+
     df = df.sort_values([station_col, time_col])
 
     pm25_col = _pick_pm25_col(df.columns.tolist(), cfg)
 
-    # horizons: prefer manifest; else infer from columns; else default
-    horizons = (
-        _load_horizons_from_manifest(art)
-        or _infer_horizons_from_columns(df.columns.tolist(), pm25_col)
-        or [1, 3, 6, 12, 24]
-    )
+    # horizons: prefer manifest; else config; else infer from columns
+    horizons: List[int] = []
+    if manifest_path.exists():
+        try:
+            m = json.loads(manifest_path.read_text())
+            hz = m.get("horizons")
+            if isinstance(hz, list) and all(isinstance(x, int) for x in hz):
+                horizons = hz
+        except Exception:
+            pass
+    if not horizons:
+        horizons = cfg.get("lags", {}).get("hours", []) or _infer_horizons_from_columns(df.columns.tolist(), pm25_col)
+
+    # ddof setting for rolling std (defaults to pandas behavior = 1)
+    roll_ddof = int(cfg.get("features", {}).get("rolling_std_ddof", 1))
 
     results = {
         "monotonic": _check_monotonic(df, station_col, time_col),
         "lags_ok": _check_lags(df, station_col, time_col, pm25_col, horizons) if pm25_col else True,
-        "rolls_ok": _check_rolls(df, station_col, time_col),
+        "rolls_ok": _check_rolls(df, station_col, time_col, ddof=roll_ddof),
         "splits_ok": _check_splits(df, time_col, train_end, val_end),
     }
 

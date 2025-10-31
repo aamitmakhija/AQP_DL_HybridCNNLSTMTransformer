@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 # a_scripts/run_all.sh
 # # End-to-end pipeline runner
-#  CONFIG="configs/default.yaml,configs/keep.yaml" bash a_scripts/run_all.sh
+
+
+# Prefer GPU (MPS) but don’t crash on unsupported ops
+export PYTORCH_ENABLE_MPS_FALLBACK=1
+
+# Tune CPU threading for Apple Silicon; 6–8 is a good starting point
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-6}
+
+# If you ever use OpenBLAS/NumExpr in your stack, these help too (harmless otherwise):
+export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-6}
+export NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-6}
+
+# CONFIG="configs/default.yaml,configs/keep.yaml" bash a_scripts/run_all.sh
 set -euo pipefail
+
+
 
 # Pretty banners
 banner() { printf '\n******** %s ********\n' "$*"; }
