@@ -1,14 +1,7 @@
-# data & artifacts
 raw_data/
 experiments/
-data/
 *.parquet
-*.npz
-*.csv
-
-# envs & local
+*.pt
+*.pth
 .venv/
-venv/
-.vscode/
-.DS_Store
-logs/
+__pycache__/
