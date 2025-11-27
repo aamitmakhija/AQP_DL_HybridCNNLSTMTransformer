@@ -1,0 +1,12 @@
+model:
+  hybrid:
+    impl: hybrid_cnn_transformer
+    use_lstm: true
+    # num_layers, cnn_channels from base (hybrid)
+
+
+
+# bash a_scripts/run_preset.sh cnn_lags_global
+# bash a_scripts/run_preset.sh lstm_lags_global
+# bash a_scripts/run_preset.sh trans_lagsroll_station
+# bash a_scripts/run_preset.sh hybrid_full_station

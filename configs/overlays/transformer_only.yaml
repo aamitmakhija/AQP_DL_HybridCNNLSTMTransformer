@@ -1,0 +1,16 @@
+model:
+  hybrid:
+    impl: transformer_only
+    num_layers: 3        # transformer layers
+    use_lstm: false      # ignored by factory for transformer_only
+    # cnn_channels / cnn_kernels still required keys but will be ignored
+    cnn_channels: [64, 64, 64]
+    cnn_kernels: [5, 5, 5]
+    d_model: 128
+    nhead: 4
+    ff_mult: 4
+    cnn_dropout: 0.1
+    attn_dropout: 0.1
+    ffn_dropout: 0.1
+    pool: gap
+    posenc: sin

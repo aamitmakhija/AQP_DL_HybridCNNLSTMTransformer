@@ -1,34 +1,38 @@
-# ==================== runtime ====================
+# ==================== runtime (Mac/MPS, H=1) ====================
 seed: 42
 
+
 dl:
+  amp:
+    enabled: true
+    dtype: fp16
   device: mps
-  batch_size: 192            # per GPU; reduce if VRAM limited
+  batch_size: 64
   num_workers: 2
   prefetch_factor: 2
   pin_memory: false
   persistent_workers: false
   optimizer: adamw
   lr: 2.0e-4
-  weight_decay: 1.0e-4
-  epochs: 1000
-  patience: 80                # give long runs time to converge
-  grad_clip: 1.0
-  grad_accum_steps: 2         # effective batch = batch_size * world_size * accum
-  model_dir: models_dm96_noSid
-  loss: huber                 # robust for spikes
-  huber_delta: 12.0
-  target_transform: log1p     # consistent with your pipeline
+  weight_decay: 2.0e-4
+  epochs: 100
+  patience: 14
+  grad_clip: 0.5
+  model_dir: models_mps
+  loss: huber
+  huber_delta: 4.0
+  target_transform: log1p
   clip_target_max: 300
   lr_scheduler:
-    name: cosine_warmup       # or "reduce_on_plateau"
-    warmup_epochs: 10
-    min_lr: 1.0e-6
+    name: reduce_on_plateau
+    factor: 0.5
+    patience: 6
+    min_lr: 1.0e-5
   amp:
-    enabled: true
-    dtype: bf16               # CUDA fp16 is fast and stable
+    enabled: false
+    dtype: fp16
 
-# ==================== paths =====================
+# ===================== paths =====================
 paths:
   data_dir: raw_data
   artifacts_dir: experiments/artifacts
@@ -37,118 +41,91 @@ paths:
   splits_dir: splits
   features_dir: features
   features_scaled_dir: features_scaled_ps
+  features_locked_dir: features_locked
   keep_config: configs/keep.yaml
+  reports_dir: reports
 
-# ================== data files ==================
+# ================= CSV reading ==================
+read_csv:
+  engine_preference: [pyarrow, python, c]
+  kwargs:
+    dtype: {}
+    keep_default_na: true
+
 data_files:
-  air: airquality.csv
-  met: meteorology.csv
+  air:
+    path: airquality.csv
+    read_csv: { kwargs: {} }
+  met:
+    path: meteorology.csv
+    read_csv: { kwargs: {} }
   station: station.csv
   district: district.csv
   city: city.csv
-  forecast: weatherforecast.csv
+  forecast:
+    path: weatherforecast.csv
+    read_csv: { kwargs: {} }
 
 # =========== canonical schema & headers =========
 data:
   id_col: station_id
-  station_col: station_id
   time_col: Datetime
   target: PM25_Concentration
-
-  features:
-    - PM25_Concentration
-    - PM10_Concentration
-    - NO2_Concentration
-    - SO2_Concentration
-    - O3_Concentration
-    - temperature
-    - pressure
-    - humidity
-    - wind_speed
-    - wind_direction
-    - CO_Concentration
-    - weather
-    - up_temperature
-    - bottom_temperature
-    - wind_level
-    - frequent
+  features: [temperature, humidity, pressure, wind_speed, wind_direction]
 
   headers:
-    time: [Datetime, datetime, timestamp, time, date_time]
-    id:   [station_id, "Station ID", StationId, stationID, site_id, station]
+    id: [station_id, Station ID, station, STATION_ID, id, ID]
+    time: [Datetime, Time, timestamp, time, TIME]
+
     airquality:
       station: ["Station ID", station_id, station, STATION_ID]
-      time:    [Time, Datetime, time, timestamp, TIME]
-      pm25:    [PM25_Concentration, "PM2.5", PM25, pm25, pm2_5, pm2.5, pm25_concentration]
-      pm10:    [PM10_Concentration, PM10, pm10, pm10_concentration]
-      no2:     [NO2_Concentration, NO2, no2, no2_concentration]
-      co:      [CO_Concentration, CO, co, co_concentration]
-      o3:      [O3_Concentration, O3, o3, o3_concentration]
-      so2:     [SO2_Concentration, SO2, so2_concentration]
-    station:
-      station:  ["Station ID", station_id, station]
-      district: ["District ID", district_id, district]
-    district:
-      district: ["District ID", district_id, district]
-      city:     ["City ID", city_id, city]
-    city:
-      city:     ["City ID", city_id, city]
+      time: [Time, Datetime, time, timestamp, TIME]
+      pm25: [PM25_Concentration, PM2.5, PM25, pm25, pm25_conc, PM25_Concentration_lag0h]
+
     meteorology:
-      geo:            [ID, geo_id, id]
-      time:           [Time, Datetime, time, timestamp]
-      weather:        [Weather, weather]
-      temperature:    [Temperature, Temp, AT, temperature, temp]
-      pressure:       [Pressure, pressure, press]
-      humidity:       [Humidity, RH, humidity, rh]
-      wind_speed:     ["Wind Speed", WIND_SPEED, WindSpeed, wind_speed, ws]
-      wind_direction: ["Wind Direction", WIND_DIREC, WindDirection, wind_direction, wd]
+      geo: [ID, geo_id, id]
+      time: [Time, Datetime, time, timestamp]
+
     weatherforecast:
-      geo:                [ID, geo_id, id]
-      ftime:              ["Forecast Time", ForecastTime, time_forecast, ftime]
-      future:             ["Future Time", FutureTime, time_future, future_time]
-      weather:            [Weather, weather]
-      up_temperature:     ["Up temperature", UpTemperature, up_temperature, temp_high_c, temp_hi]
+      geo: [ID, geo_id, id]
+      ftime: ["Forecast Time", ForecastTime, time_forecast, ftime]
+      future: ["Future Time", FutureTime, time_future, future_time]
+      weather: [Weather, weather]
+      up_temperature: ["Up temperature", UpTemperature, up_temperature, temp_high_c, temp_hi]
       bottom_temperature: ["Bottom Temperature", BottomTemperature, bottom_temperature, temp_low_c, temp_lo]
-      wind_level:         ["Wind Level", WindLevel, wind_level]
-      wind_direction:     ["Wind Direction", WIND_DIREC, wind_direction, WindDirection]
+      wind_level: ["Wind Level", WindLevel, wind_level]
+      wind_direction: ["Wind Direction", WIND_DIREC, wind_direction, WindDirection]
 
 # ============== missing data handling ================
 missing:
   drop_threshold: 0.8
   rolling_mean_hours: 24
-  drop_features:
-    - bottom_temperature
-    - frequent
+  drop_features: [bottom_temperature, frequent]
   impute:
     enabled: true
     ffill_limit: 6
     rolling_window: 24
     median_fallback: true
 
-# ============ station selection (optional) ============
+# ============ station selection ============
 station_scope:
-  mode: "all"
-  station_ids: []
+  mode: min_rows
+  min_rows: 5000
 
 # ================= time split cutoffs =================
 split:
   train_end: "2014-12-31"
-  val_end:   "2015-03-31"
+  val_end: "2015-03-31"
   drop_years: [1970]
 
 # ==================== scaling ========================
 scaling:
   type: standard
   per_station: true
-  exclude_columns:
-    - PM25_Concentration
-    - station_id
-    - Datetime
-    - id
-    - district_id
-    - city_id
   epsilon: 1.0e-8
   output_format: parquet
+  meta_file: scaler_params.json
+  exclude_columns: [PM25_Concentration, station_id, Datetime, id, district_id, city_id]
 
 # ============== feature engineering ==================
 lags:
@@ -156,76 +133,99 @@ lags:
   hours: [1, 3, 6, 12, 24, 48]
 
 features:
+  lock_enabled: true
+  include_groups: ["aq","met","rolling","time"]
+  locked_manifest: feature_list.json
+  autogenerate_if_missing: true
   rolling_windows: [6, 12, 24, 48, 72, 168]
+  lag_hours: [1, 3, 6, 12, 24, 48]
+  time_features: { cyclical: true }
   output:
     format: parquet
     features_file: dataset_features.parquet
+    features_file_imputed: dataset_features_imputed.parquet
     manifest_file: features_manifest.json
+    activate_imputed: true
+    activate_mode: overwrite
 
-# ===================== output (splits & partitions) =======================
+# ===================== output (for 02_build_stream & readers) =======================
 output:
-  per_station_filename: data.parquet
-  partition_prefix: "station="
   format: parquet
   split_filenames:
     train: train.parquet
     val:   val.parquet
     test:  test.parquet
-    summary: split_summary.json
+  naming:
+    pattern: "{key}.{ext}"
+  partition_prefix: "station="
+  per_station_filename: "data.parquet"
 
 # =====================================================
-# Windowing + trainer consumers
+# Windowing + trainer (H=1 only)
 # =====================================================
 sequence:
   out_dir: seq
+  lookback: 96
+  horizon: [1]
   train_split: train
-  val_split: val
-  test_split: test
-  lookback: 168
-  horizon: [1] ## 3, 6, 12, 24, 48]  # multi-horizon
-  stride: 3
+  val_split:   val
+  test_split:  test
+  stride: 2
   dropna: true
-  min_valid_ratio: 0.75
-  shard_size: 30000
+  min_valid_ratio: 0.50
+  shard_size: 4000
   dtype: float32
+  nan_fill_value: 0.0
+  strict_features: true
   check_max_shards: 1
   sample:
-    enabled: false          # use all windows
-    method: per_station_uniform
-    train_frac: 1.0
-    val_frac:   1.0
-    test_frac:  1.0
-    min_windows_per_station: 0
-    seed: 42
+    enabled: false
 
 baselines:
   seasonal_period: 168
 
+# ================== model selection & knobs ==================
 model:
   hybrid:
+    impl: hybrid_cnn_transformer        # or: legacy_hybrid_encoder
     use_station_embedding: true
-    station_embed_dim: 32
-    cnn_channels: [64, 64]
-    cnn_kernels: [7, 5]
-    cnn_dropout: 0.05
-    d_model: 288
-    nhead: 6
-    num_layers: 5
+    station_embed_dim: 16
+    cnn_channels: [48, 48, 48]
+    cnn_kernels: [7, 5, 3]
+    cnn_dropout: 0.15
+    d_model: 160
+    nhead: 4
+    num_layers: 2
     ff_mult: 4
-    attn_dropout: 0.10
-    ffn_dropout: 0.10
+    attn_dropout: 0.05
+    ffn_dropout: 0.15
     pool: gap
     posenc: sin
+    # LSTM (used only by hybrid_cnn_transformer)
     use_lstm: true
-    lstm_hidden: 256
+    lstm_hidden: 128
     lstm_layers: 1
-    lstm_dropout: 0.0
+    lstm_dropout: 0.10
     ln_eps: 1e-6
 
+# ====================== evaluation ======================
 eval:
   metrics: ["rmse", "mae", "smape", "r2"]
   per_station: true
   save_preds: true
+  sanitize:
+    clamp: { min: null, max: null }
+  report_filename: eval_report.json
+  preds_filename_pattern: preds_H{H}.csv
+  per_station_filename_pattern: per_station_H{H}.csv
+  amp: { enabled: false }
+  min_valid_ratio: 0.50
 
+# ======================= reports =======================
 reports:
-  stations_keep_txt: stations_keep.txt
+  stations_keep_txt: ""
+  duplicates_summary: reports/duplicates_summary.json
+  write_duplicates_csv: true
+  duplicates_csv_dir: reports/dup_rows
+  plots_dir: reports/plots
+  quick_stats_json: reports/quick_stats.json

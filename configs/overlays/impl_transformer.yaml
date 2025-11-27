@@ -1,0 +1,6 @@
+model:
+  hybrid:
+    impl: transformer_only
+    use_lstm: false
+    cnn_channels: []        # no CNN
+    num_layers: 2           # pure Transformer encoder

@@ -22,12 +22,11 @@ def _deep_update(dst: dict, src: dict) -> dict:
 def _load_cfg() -> dict:
     """
     Load configuration strictly from CONFIG env var (comma-separated YAML paths).
-    No default path is assumed to avoid hard-coding.
     """
     cfg_env = os.environ.get("CONFIG")
     if not cfg_env:
         raise SystemExit(
-            "CONFIG env var is not set. Provide a comma-separated list of YAML files, "
+            "CONFIG env var is not set. Provide comma-separated YAML files, "
             "e.g. CONFIG='configs/default.yaml,configs/keep.yaml'"
         )
     merged: Dict[str, Any] = {}
@@ -54,12 +53,8 @@ def _read_csv_with_engines(
     common_kwargs: Dict[str, Any],
     per_file_kwargs: Dict[str, Any] | None = None,
 ) -> pd.DataFrame:
-    """
-    Try engines in the specified order; if none provided, let pandas choose.
-    All kwargs are config-driven.
-    """
+    """Try engines in order; if none provided, let pandas choose."""
     kwargs = {**common_kwargs, **(per_file_kwargs or {})}
-
     if not engines:
         return pd.read_csv(path, **kwargs)
 
@@ -70,7 +65,6 @@ def _read_csv_with_engines(
         except Exception as e:
             last_err = e
             continue
-    # If all engines failed, raise the last error
     assert last_err is not None
     raise last_err
 
@@ -81,44 +75,37 @@ def _build_output_name(
     ext: str | None,
     per_file_override: str | None = None,
 ) -> str:
-    """
-    Name comes from:
-      1) per-file override (if provided), else
-      2) global pattern (may reference {key} and {ext})
-    """
+    """Name comes from per-file override or global pattern."""
     if per_file_override:
         return per_file_override
-    return pattern.format(key=key, ext=(ext or ""))
+    e = (ext or "").strip()
+    name = pattern.format(key=key, ext=e)
+    if e == "" and name.endswith("."):
+        name = name[:-1]
+    return name
 
 
 def _write_frame(df: pd.DataFrame, out_path: Path, fmt: str, writer_kwargs: Dict[str, Any]) -> None:
-    """
-    Generic writer: calls DataFrame.to_{fmt}(**writer_kwargs).
-    The 'fmt' and all writer kwargs are config-driven.
-    """
+    """Generic writer calling DataFrame.to_{fmt}()."""
     method_name = f"to_{fmt}"
     if not hasattr(df, method_name):
-        raise ValueError(f"Unsupported output format '{fmt}'. Pandas has no '{method_name}()'")
+        raise ValueError(f"Unsupported output format '{fmt}'")
 
-    # Ensure parent dir exists (path itself comes from config/naming)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if "index" not in writer_kwargs:
+        writer_kwargs = {**writer_kwargs, "index": False}
 
-    # Some writers accept 'path' as first arg; others expect it as first positional.
-    # We pass it positionally to be universal; remaining settings are from config.
     getattr(df, method_name)(out_path.as_posix(), **writer_kwargs)
 
 
 # ---------- main ----------
 def main():
     cfg = _load_cfg()
-
-    # Required top-level blocks
     paths_cfg: Dict[str, Any] = cfg.get("paths", {})
     data_files_cfg: Dict[str, Any] = cfg.get("data_files", {})
     output_cfg: Dict[str, Any] = cfg.get("output", {})
     read_csv_cfg: Dict[str, Any] = cfg.get("read_csv", {})
 
-    # Resolve paths
     data_dir = paths_cfg.get("data_dir")
     artifacts_dir = paths_cfg.get("artifacts_dir")
     if not data_dir or not artifacts_dir:
@@ -127,37 +114,26 @@ def main():
     DATA_DIR = Path(data_dir)
     ART_DIR = _ensure_dir(artifacts_dir)
 
-    # Read CSV behavior (all config-driven)
-    engine_preference: List[str] | None = read_csv_cfg.get("engine_preference")  # e.g., ["c", "python"]
-    common_read_kwargs: Dict[str, Any] = read_csv_cfg.get("kwargs", {})  # ANY pandas.read_csv kwargs
+    engine_preference: List[str] | None = read_csv_cfg.get("engine_preference")
+    common_read_kwargs: Dict[str, Any] = read_csv_cfg.get("kwargs", {})
 
-    # Output behavior (all config-driven)
-    fmt: str = output_cfg.get("format")  # e.g., "parquet", "feather", "csv"
+    fmt: str = output_cfg.get("format")
     if not fmt:
         raise SystemExit("output.format must be set (e.g., parquet, feather, csv).")
 
-    ext: str | None = output_cfg.get("extension")  # e.g., "parquet" (optional; used by naming)
+    ext: str | None = output_cfg.get("extension")
     naming_pattern: str = output_cfg.get("naming", {}).get("pattern", "{key}.{ext}")
     writer_kwargs: Dict[str, Any] = output_cfg.get("writer_kwargs", {})
-    subdir: str | None = output_cfg.get("subdir")  # optional subdir under artifacts
+    subdir: str | None = output_cfg.get("subdir")
 
-    # Optional output subdirectory (from config)
     target_dir = ART_DIR / subdir if subdir else ART_DIR
     _ensure_dir(target_dir)
 
     print(f"[csv2parquet] CONFIG={os.environ.get('CONFIG')}")
     print(f"[csv2parquet] DATA_DIR={DATA_DIR}  →  ART_DIR={target_dir}")
 
-    written: List[str] = []
-    skipped: List[str] = []
+    written, skipped, errors = [], [], []
 
-    # Each entry in data_files can be:
-    #   key: "relative/path.csv"
-    # or
-    #   key:
-    #     path: "relative/path.csv"
-    #     read_csv: {kwargs...}           # per-file pandas.read_csv kwargs
-    #     output_name: "custom_name.ext"  # per-file explicit output filename
     for key, spec in data_files_cfg.items():
         if isinstance(spec, str):
             src_rel = spec
@@ -165,10 +141,13 @@ def main():
             per_file_output_name = None
         elif isinstance(spec, dict):
             src_rel = spec.get("path")
-            per_file_read_kwargs = spec.get("read_csv", {}).get("kwargs", {})
+            _rc = spec.get("read_csv", {})
+            per_file_read_kwargs = _rc.get("kwargs", _rc if isinstance(_rc, dict) else {})
             per_file_output_name = spec.get("output_name")
         else:
-            raise SystemExit(f"data_files.{key} must be a string path or an object with 'path'.")
+            print(f"[WARN] data_files.{key} malformed; skipping")
+            skipped.append(key)
+            continue
 
         if not src_rel:
             print(f"[WARN] data_files.{key} missing 'path'; skipping")
@@ -181,30 +160,34 @@ def main():
             skipped.append(key)
             continue
 
-        # Read (config-driven engines + kwargs)
-        df = _read_csv_with_engines(
-            src,
-            engines=engine_preference,
-            common_kwargs=common_read_kwargs,
-            per_file_kwargs=per_file_read_kwargs,
-        )
-
-        # Resolve output filename and write
-        out_name = _build_output_name(
-            key=key,
-            pattern=naming_pattern,
-            ext=ext,
-            per_file_override=per_file_output_name,
-        )
-        out_path = target_dir / out_name
-
-        _write_frame(df, out_path, fmt=fmt, writer_kwargs=writer_kwargs)
-        written.append(out_name)
+        try:
+            df = _read_csv_with_engines(
+                src,
+                engines=engine_preference,
+                common_kwargs=common_read_kwargs,
+                per_file_kwargs=per_file_read_kwargs,
+            )
+            out_name = _build_output_name(
+                key=key,
+                pattern=naming_pattern,
+                ext=ext,
+                per_file_override=per_file_output_name,
+            )
+            out_path = target_dir / out_name
+            _write_frame(df, out_path, fmt=fmt, writer_kwargs=writer_kwargs)
+            written.append(out_name)
+        except Exception as e:
+            errors.append(f"{key}: {e.__class__.__name__}: {e}")
+            continue
 
     if written:
         print(f"[OK] wrote {', '.join(written)} in {target_dir}")
     if skipped:
         print(f"[INFO] skipped (not found or misconfigured): {', '.join(skipped)}")
+    if errors:
+        print(f"[ERR] failures ({len(errors)}):")
+        for msg in errors:
+            print("  -", msg)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,3 @@
+features:
+  lock_enabled: false
+  include_groups: ["aq"]   #  feature-lock grouping key; keep minimal

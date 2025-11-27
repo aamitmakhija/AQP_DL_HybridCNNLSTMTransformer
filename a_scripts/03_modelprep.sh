@@ -1,9 +1,8 @@
+# a_scripts/03_modelprep.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -----------------------------
-# Pick a Python interpreter (prefer venv)
-# -----------------------------
+# ------- python picker -------
 if [[ -n "${VIRTUAL_ENV-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
   PY="${VIRTUAL_ENV}/bin/python"
 elif command -v python >/dev/null 2>&1; then
@@ -15,131 +14,122 @@ else
   exit 1
 fi
 
-# -----------------------------
-# Config handling
-# -----------------------------
 export CONFIG="${CONFIG:-configs/default.yaml}"
+export PYTHONUNBUFFERED=1
+export PYTHONPATH=".:${PYTHONPATH:-}"
 
 echo "[03_modelprep] Using CONFIG=${CONFIG}"
 echo "[03_modelprep] CWD=$(pwd)"
 echo "[03_modelprep] Python: $("$PY" -V) at ${PY}"
 
-# -----------------------------
-# Paths derived from CONFIG (handles comma-separated overlays)
-# -----------------------------
-read -r ART_DIR SEQ_OUT_DIR_REL FEATS_REL < <("$PY" - <<'PY'
-import os, yaml
+# ------- read key paths from YAML (deep-merge + coalesce blanks) -------
+eval "$("$PY" - <<'PY'
+import os, sys, yaml, shlex
+from copy import deepcopy
 
 def deep_update(dst, src):
+    if not isinstance(dst, dict): dst = {}
     for k, v in (src or {}).items():
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            deep_update(dst[k], v)
+            dst[k] = deep_update(dst[k], v)
         else:
             dst[k] = v
     return dst
 
-cfg = yaml.safe_load(open("configs/default.yaml"))
-cfg_env = os.environ.get("CONFIG","")
-for p in [s.strip() for s in cfg_env.split(",") if s.strip()]:
+def ry(p):
     with open(p, "r") as f:
-        deep_update(cfg, yaml.safe_load(f) or {})
+        return yaml.safe_load(f) or {}
 
-art = cfg["paths"]["artifacts_dir"]
-seq_rel = cfg["sequence"]["out_dir"]
-feats_rel = cfg["paths"].get("features_scaled_dir", "features_scaled")
+def coalesce(v, default):
+    if v is None: return default
+    if isinstance(v, str) and not v.strip(): return default
+    return v
 
-print(art)
-print(seq_rel)
-print(feats_rel)
+cfg = ry("configs/default.yaml")
+cfg_env = os.environ.get("CONFIG","")
+if cfg_env:
+    base = deepcopy(cfg)
+    for p in [s.strip() for s in cfg_env.split(",") if s.strip()]:
+        base = deep_update(base, ry(p))
+    cfg = base
+
+art      = coalesce(cfg.get("paths",{}).get("artifacts_dir"), "experiments/artifacts")
+seq_rel  = coalesce(cfg.get("sequence",{}).get("out_dir"), "seq")
+feats_rel= coalesce(cfg.get("paths",{}).get("features_scaled_dir"), "features_scaled")
+
+out_fmt = (cfg.get("scaling",{}) or {}).get("output_format") or (cfg.get("output",{}) or {}).get("format") or "parquet"
+out_fmt = str(out_fmt).strip().lower()
+normalized = False
+if out_fmt not in {"parquet","feather","csv"}:
+    out_fmt = "parquet"; normalized = True
+
+print(f"ART_DIR={shlex.quote(art)}")
+print(f"SEQ_OUT_DIR_REL={shlex.quote(seq_rel)}")
+print(f"FEATS_REL={shlex.quote(feats_rel)}")
+print(f"OUT_FMT={shlex.quote(out_fmt)}")
+print(f"NORMALIZED_FMT={'1' if normalized else '0'}")
 PY
-)
+)"
 
-# Make seq dir absolute if needed
-if [[ "${SEQ_OUT_DIR_REL}" = /* ]]; then
-  SEQ_DIR="${SEQ_OUT_DIR_REL}"
-else
-  SEQ_DIR="${ART_DIR}/${SEQ_OUT_DIR_REL}"
+# read back the NORMALIZED flag into a variable (already set by eval)
+if [[ "${NORMALIZED_FMT}" == "1" ]]; then
+  echo "[03_modelprep] WARN: split format was invalid in overlays; normalized to '${OUT_FMT}'"
 fi
 
-# Resolve features_scaled_dir (absolute or relative to artifacts_dir)
-if [[ "${FEATS_REL}" = /* ]]; then
-  SCALED_DIR="${FEATS_REL}"
-else
-  SCALED_DIR="${ART_DIR}/${FEATS_REL}"
-fi
+# abs/rel resolve
+SEQ_DIR="${SEQ_OUT_DIR_REL}"; [[ "${SEQ_DIR}" != /* ]] && SEQ_DIR="${ART_DIR}/${SEQ_OUT_DIR_REL}"
+SCALED_DIR="${FEATS_REL}";    [[ "${SCALED_DIR}" != /* ]] && SCALED_DIR="${ART_DIR}/${FEATS_REL}"
+
+# ensure dirs exist
+mkdir -p "${ART_DIR}" "${SEQ_DIR}" "${SCALED_DIR}"
 
 echo "[03_modelprep] artifacts_dir=${ART_DIR}"
 echo "[03_modelprep] seq_dir=${SEQ_DIR}"
 echo "[03_modelprep] scaled_dir=${SCALED_DIR}"
+echo "[03_modelprep] split format=${OUT_FMT}"
 
-# -----------------------------
-# Ensure scaled features exist (trust dataprep/scaler as the source of truth)
-# -----------------------------
-NEED_SCALE=0
-for SPL in train val test; do
-  [[ -f "${SCALED_DIR}/${SPL}.parquet" ]] || NEED_SCALE=1
+# ------- ensure scaled splits exist -------
+case "${OUT_FMT}" in
+  parquet) EXT="parquet" ;;
+  feather) EXT="feather" ;;
+  csv)     EXT="csv" ;;
+  *) echo "Unsupported split format after normalization: ${OUT_FMT}" >&2; exit 2 ;;
+esac
+
+need_scale=0
+for spl in train val test; do
+  [[ -f "${SCALED_DIR}/${spl}.${EXT}" ]] || need_scale=1
 done
 
-if [[ "${NEED_SCALE}" -eq 1 ]]; then
-  echo "[03_modelprep] Scaled features not found — running per-station scaler"
-  "$PY" -m c_dataprep.03b_scale_features_per_station
+if (( need_scale )); then
+  echo "[03_modelprep] Scaled splits missing → running scaler"
+  "$PY" c_dataprep/03b_scale_features_per_station.py
 else
-  echo "[03_modelprep] Scaled features present — skipping scaling step"
+  echo "[03_modelprep] Scaled splits present — skipping scaling"
 fi
 
-# -----------------------------
-# Build sequence windows (resilient module selection)
-# -----------------------------
+# ------- build sequence windows (prefer multi-horizon) -------
 echo "[03_modelprep] Building sequence windows"
-
-run_py () {  # helper: run python file with CONFIG env intact
-  local f="$1"
-  echo "[03_modelprep] -> ${PY} ${f}"
-  "$PY" "${f}"
-}
-
-if "$PY" - <<'PY'
-import importlib, sys
-try:
-    importlib.import_module("d_modelprep.CA_make_windows")
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-PY
-then
-  "$PY" -m d_modelprep.CA_make_windows
+if [[ -f "d_modelprep/CA_make_windows_multi.py" ]]; then
+  "$PY" d_modelprep/CA_make_windows_multi.py
 elif [[ -f "d_modelprep/CA_make_windows.py" ]]; then
-  run_py "d_modelprep/CA_make_windows.py"
-elif [[ -f "d_modelprep/CA_make_windows_multi.py" ]]; then
-  run_py "d_modelprep/CA_make_windows_multi.py"
+  "$PY" d_modelprep/CA_make_windows.py
 else
-  CAND="$(ls d_modelprep/*make_windows*.py 2>/dev/null | head -n 1 || true)"
-  if [[ -n "${CAND}" ]]; then
-    echo "[03_modelprep] Falling back to ${CAND}"
-    run_py "${CAND}"
-  else
-    echo "ERROR: No window-maker found (expected one of:
-  - d_modelprep/CA_make_windows.py
-  - d_modelprep/CA_make_windows_multi.py
-  - d_modelprep/*make_windows*.py )" >&2
-    exit 1
-  fi
+  cand="$(ls d_modelprep/*make_windows*.py 2>/dev/null | head -n 1 || true)"
+  [[ -n "${cand}" ]] || { echo "ERROR: No window-maker found in d_modelprep/"; exit 3; }
+  echo "[03_modelprep] Falling back to ${cand}"
+  "$PY" "${cand}"
 fi
 
-# -----------------------------
-# DO NOT touch the feature lock here
-# (feature_list.json is authored by the scaler/dataprep step)
-# -----------------------------
+# ------- feature lock presence (informational) -------
 if [[ -f "${ART_DIR}/features_locked/feature_list.json" ]]; then
-  echo "[03_modelprep] Using existing feature lock at ${ART_DIR}/features_locked/feature_list.json"
+  echo "[03_modelprep] Using feature lock: ${ART_DIR}/features_locked/feature_list.json"
 else
-  echo "[03_modelprep] WARNING: feature lock missing; ensure dataprep/scaler ran successfully." >&2
+  echo "[03_modelprep] WARNING: feature lock missing; ensure dataprep/scaler produced it" >&2
 fi
 
-# -----------------------------
-# Quick window checks
-# -----------------------------
+# ------- quick window checks -------
 echo "[03_modelprep] Checking sequence windows"
-"$PY" -m d_modelprep.CB_check_windows
+"$PY" d_modelprep/CB_check_windows.py --max-shards 2
 
 echo "******************************** [03_modelprep] ******************************** DONE"

@@ -1,0 +1,35 @@
+dl:
+  device: cuda
+  batch_size: 96
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  epochs: 320
+  patience: 20
+  lr_scheduler:
+    name: reduce_on_plateau
+    factor: 0.5
+    patience: 5
+    min_lr: 5.0e-6
+  amp:
+    enabled: true
+    dtype: fp16
+
+model:
+  hybrid:
+    impl: hybrid_cnn_transformer
+    use_station_embedding: false
+    cnn_channels: [64, 64, 64]
+    cnn_dropout: 0.12
+    d_model: 192
+    nhead: 4
+    num_layers: 3
+    ff_mult: 4
+    attn_dropout: 0.04
+    ffn_dropout: 0.12
+    pool: gap
+    posenc: sin
+    use_lstm: true
+    lstm_hidden: 160
+    lstm_layers: 1
+    lstm_dropout: 0.10
+    ln_eps: 1e-6

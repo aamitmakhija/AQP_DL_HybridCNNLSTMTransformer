@@ -1,0 +1,3 @@
+# overlays/beat17_lock_on.yaml
+features:
+  lock_enabled: true

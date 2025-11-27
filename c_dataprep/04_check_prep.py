@@ -1,110 +1,211 @@
-# checks/check_prep.py
+#!/usr/bin/env python3
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Any, List, Optional
 import json
-
 import pandas as pd
+import numpy as np
 
 from common.config_loader import load_cfg
 
-# --------- small IO helpers ----------
+# ------------- helpers -------------
+def _req(d: Dict[str, Any], path: List[str]) -> Any:
+    cur: Any = d
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur or cur[k] is None:
+            raise KeyError("configs: missing " + ".".join(path))
+        cur = cur[k]
+    return cur
+
+def _under(root: Path, maybe: str) -> Path:
+    p = Path(maybe)
+    return p if p.is_absolute() else (root / p)
+
 def _read_df(path: Path, fmt: str) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    if fmt == "parquet":
-        return pd.read_parquet(path)
-    if fmt == "feather":
-        return pd.read_feather(path)
-    if fmt == "csv":
-        return pd.read_csv(path)
-    raise SystemExit(f"Unsupported format: {fmt}")
+    f = (fmt or "").lower()
+    if f == "parquet": return pd.read_parquet(path)
+    if f == "feather": return pd.read_feather(path)
+    if f == "csv":     return pd.read_csv(path)
+    raise SystemExit(f"Unsupported format: {fmt!r}")
 
-def _shape_line(df: pd.DataFrame, id_col: str) -> str:
-    if df.empty:
-        return "missing"
-    st = df[id_col].nunique() if id_col in df.columns else 0
-    return f"rows={len(df):,}  stations={st}"
+def _resolve_col(df: pd.DataFrame, primary: str, aliases: List[str], extra_fallbacks: Optional[List[str]] = None) -> str:
+    by_lower = {c.lower(): c for c in df.columns}
+    tried = []
+    for cand in [primary] + list(aliases or []) + list(extra_fallbacks or []):
+        if cand is None:
+            continue
+        k = str(cand).lower()
+        tried.append(cand)
+        if k in by_lower:
+            return by_lower[k]
+    sample = sorted(df.columns[:12].tolist())
+    raise SystemExit(f"Required column '{primary}' not found. Tried aliases={tried}. Sample columns={sample}")
 
-def main():
+def _manifest_cols(art_dir: Path, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    # Try features.output.manifest_file first
+    feats_dir = _under(art_dir, _req(cfg, ["paths", "features_dir"]))
+    out_cfg   = _req(cfg, ["features", "output"])
+    man_file  = out_cfg.get("manifest_file")
+    if man_file:
+        p = feats_dir / man_file
+        if p.exists():
+            try:
+                m = json.loads(p.read_text())
+                if "time_col" in m and "id_cols" in m and m["id_cols"]:
+                    return {"time_col": m["time_col"], "id_col": m["id_cols"][0], "target_col": m.get("target_col")}
+            except Exception:
+                pass
+
+    # Else try features_locked/locked_manifest
+    locked_dir = _under(art_dir, cfg.get("paths", {}).get("features_locked_dir", "features_locked"))
+    locked_name = cfg.get("features", {}).get("locked_manifest", "feature_list.json")
+    p = locked_dir / locked_name
+    if p.exists():
+        try:
+            m = json.loads(p.read_text())
+            # many lock files only list X_cols; may not help for id/time
+            tc = m.get("time_col")
+            ids = m.get("id_cols") or m.get("id") or []
+            if tc and ids:
+                return {"time_col": tc, "id_col": ids[0], "target_col": m.get("target_col")}
+        except Exception:
+            pass
+    return {}
+
+# ------------- core checks -------------
+def _check_monotonic(df: pd.DataFrame, id_col: str, time_col: str) -> None:
+    bad = []
+    for sid, g in df.groupby(id_col, sort=False):
+        t = pd.to_datetime(g[time_col], errors="coerce")
+        if not t.is_monotonic_increasing:
+            bad.append(sid)
+            if len(bad) >= 5:
+                break
+    if bad:
+        raise SystemExit(f"[ERR] timestamps not monotonic for stations (sample): {bad}")
+    print("[OK] timestamps are monotonic per station")
+
+def _check_lags(df: pd.DataFrame, id_col: str, time_col: str, target: str, hours: List[int]) -> None:
+    # Spot-check only those lags that exist
+    g = df.sort_values([id_col, time_col]).groupby(id_col, sort=False)
+    base = g[target]
+    checked = 0
+    for h in hours:
+        col = f"{target}_lag{int(h)}h"
+        if col not in df.columns:
+            continue
+        exp = base.shift(h)
+        # overlap where both notna
+        mask = exp.notna() & df[col].notna()
+        if mask.any():
+            if not np.allclose(exp[mask].to_numpy(dtype=float), df.loc[mask, col].to_numpy(dtype=float), equal_nan=False):
+                raise SystemExit(f"[ERR] {col} does not match past-only shift of {target}")
+            print(f"[OK] {col} matches past-only shift")
+            checked += 1
+    if checked == 0:
+        print("[warn] no target lag columns found to check (skipping).")
+
+def _check_split_bounds(train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame,
+                        time_col: str, train_end: str, val_end: str) -> None:
+    te = pd.to_datetime(train_end)
+    ve = pd.to_datetime(val_end)
+    t_train = pd.to_datetime(train[time_col], errors="coerce")
+    t_val   = pd.to_datetime(val[time_col], errors="coerce")
+    t_test  = pd.to_datetime(test[time_col], errors="coerce")
+
+    if not (t_train.max() <= te):
+        raise SystemExit("[ERR] train split exceeds train_end")
+    print("[OK] train split ≤ train_end")
+
+    if not ((t_val.min() > te) and (t_val.max() <= ve)):
+        raise SystemExit("[ERR] val split not strictly inside (train_end, val_end]")
+    print("[OK] val split within (train_end, val_end]")
+
+    if not (t_test.min() > ve):
+        raise SystemExit("[ERR] test split not strictly after val_end")
+    print("[OK] test split > val_end")
+
+# ------------- main -------------
+def main() -> None:
     cfg = load_cfg()
 
-    art_dir      = Path(cfg["paths"]["artifacts_dir"])
-    splits_dir   = art_dir / cfg["paths"].get("splits_dir", "splits")
-    features_dir = art_dir / cfg["paths"].get("features_dir", "features")
-    scaled_dir   = art_dir / cfg["paths"].get("features_scaled_dir", "features_scaled_ps")
+    art_dir   = _under(Path("."), _req(cfg, ["paths", "artifacts_dir"]))
+    feats_dir = _under(art_dir, _req(cfg, ["paths", "features_dir"]))
+    splits_dir = _under(art_dir, cfg.get("paths", {}).get("splits_dir", "splits"))
 
-    id_col   = cfg["data"].get("id_col", "station_id")
-    time_col = cfg["data"]["time_col"]
+    out_cfg = _req(cfg, ["features", "output"])
+    fmt = _req(out_cfg, ["format"])
+    feats_file = _req(out_cfg, ["features_file"])
+    feats_path = feats_dir / feats_file
 
-    # split filenames & format
-    split_names: Dict[str, str] = cfg.get("output", {}).get("split_filenames", {}) or {}
-    in_fmt = cfg.get("output", {}).get("format", "parquet")
+    # Load features
+    if not feats_path.exists():
+        raise SystemExit(f"features file missing: {feats_path}")
+    df = _read_df(feats_path, fmt)
 
-    # features output naming
-    feats_cfg = cfg.get("features", {}).get("output", {})
-    feats_file = feats_cfg.get("features_file", "dataset_features.parquet")
-    feats_fmt  = feats_cfg.get("format", "parquet")
+    # Resolve id/time/target (manifest → cfg aliases)
+    manifest = _manifest_cols(art_dir, cfg)
+    target = manifest.get("target_col") or _req(cfg, ["data", "target"])
 
-    # scaler meta filename (new scaler writes scaler_params.json)
-    scaler_meta_candidates = ["scaler_params.json", "scaler.json"]
-
-    # -------- SPLITS CHECK --------
-    print("=== SPLITS CHECK ===")
-    for name in ("train", "val", "test"):
-        fn = split_names.get(name, f"{name}.parquet" if in_fmt == "parquet" else f"{name}.{in_fmt}")
-        p  = splits_dir / fn
-        df = _read_df(p, in_fmt)
-        print(f"{name:<5} {_shape_line(df, id_col)}")
-
-    # -------- FEATURES CHECK --------
-    print("\n=== FEATURES CHECK ===")
-    feats_path = features_dir / feats_file
-    feats = _read_df(feats_path, feats_fmt)
-    if feats.empty:
-        print("features file not found or empty; run engineer_features.py")
+    if manifest.get("id_col") and manifest.get("time_col"):
+        id_col, time_col = manifest["id_col"], manifest["time_col"]
+        # Make sure they actually exist; if not, fall back to alias resolver
+        if id_col not in df.columns or time_col not in df.columns:
+            # fall back to alias resolution
+            hdr = _req(cfg, ["data", "headers"])
+            id_primary = _req(cfg, ["data", "id_col"])
+            time_primary = _req(cfg, ["data", "time_col"])
+            id_aliases = list(hdr.get("id", []))
+            time_aliases = list(hdr.get("time", []))
+            add_fallbacks = []
+            lowers = {str(x).lower() for x in id_aliases + [id_primary]}
+            if "id" not in lowers: add_fallbacks.append("id")
+            if "ID".lower() not in lowers: add_fallbacks.append("ID")
+            id_col   = _resolve_col(df, id_primary, id_aliases, add_fallbacks)
+            time_col = _resolve_col(df, time_primary, time_aliases)
     else:
-        stn = feats[id_col].nunique() if id_col in feats.columns else 0
-        print(f"rows={len(feats):,}  stations={stn}  cols={len(feats.columns)}")
-        if time_col in feats.columns:
-            tmin = pd.to_datetime(feats[time_col], errors="coerce").min()
-            tmax = pd.to_datetime(feats[time_col], errors="coerce").max()
-            print(f"time range: {tmin} → {tmax}")
-        # sample some numeric columns
-        num_cols_sample = [c for c in feats.columns if pd.api.types.is_numeric_dtype(feats[c])][:10]
-        print(f"sample numeric cols: {num_cols_sample}")
+        hdr = _req(cfg, ["data", "headers"])
+        id_primary = _req(cfg, ["data", "id_col"])
+        time_primary = _req(cfg, ["data", "time_col"])
+        id_aliases = list(hdr.get("id", []))
+        time_aliases = list(hdr.get("time", []))
+        add_fallbacks = []
+        lowers = {str(x).lower() for x in id_aliases + [id_primary]}
+        if "id" not in lowers: add_fallbacks.append("id")
+        if "ID".lower() not in lowers: add_fallbacks.append("ID")
+        id_col   = _resolve_col(df, id_primary, id_aliases, add_fallbacks)
+        time_col = _resolve_col(df, time_primary, time_aliases)
 
-    # -------- SCALED FEATURES CHECK --------
-    print("\n=== SCALED FEATURES CHECK ===")
-    # scaled splits assumed to mirror input split names & out format from scaling.output_format (fallback to in_fmt)
-    out_fmt = cfg.get("scaling", {}).get("output_format", in_fmt)
+    # Canonicalize order
+    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
+    df.sort_values([id_col, time_col], inplace=True)
 
-    any_scaled = False
-    for name in ("train", "val", "test"):
-        fn = split_names.get(name, f"{name}.parquet" if out_fmt == "parquet" else f"{name}.{out_fmt}")
-        p  = scaled_dir / fn
-        df = _read_df(p, out_fmt)
-        if not df.empty:
-            any_scaled = True
-        print(f"scaled-{name:<5} {_shape_line(df, id_col)}")
+    # Checks
+    _check_monotonic(df, id_col, time_col)
 
-    # scaler meta
-    meta_path = None
-    for cand in scaler_meta_candidates:
-        p = scaled_dir / cand
-        if p.exists():
-            meta_path = p
-            break
-    if meta_path:
-        meta = json.loads(meta_path.read_text())
-        mode = meta.get("mode", "<unknown>")
-        cols = meta.get("columns") or meta.get("scaled_numeric_cols") or []
-        print(f"scaler mode={mode} numeric_cols={len(cols)}")
-    else:
-        if any_scaled:
-            print("scaler meta not found (looked for scaler_params.json / scaler.json)")
-        else:
-            print("scaled features not found; run scale_features_per_station.py")
+    # Target lags list from YAML (if present)
+    lag_hours = []
+    if "lags" in cfg and isinstance(cfg["lags"], dict):
+        if cfg["lags"].get("enabled") and cfg["lags"].get("hours"):
+            lag_hours = list(cfg["lags"]["hours"])
+    _check_lags(df, id_col, time_col, target, lag_hours)
+
+    # Split boundary checks
+    split_fmt = cfg.get("output", {}).get("format", "parquet")
+    sfiles = cfg.get("output", {}).get("split_filenames", {}) or {}
+    train_p = splits_dir / sfiles.get("train", f"train.{split_fmt}")
+    val_p   = splits_dir / sfiles.get("val",   f"val.{split_fmt}")
+    test_p  = splits_dir / sfiles.get("test",  f"test.{split_fmt}")
+
+    train_df = _read_df(train_p, split_fmt)
+    val_df   = _read_df(val_p,   split_fmt)
+    test_df  = _read_df(test_p,  split_fmt)
+
+    te = _req(cfg, ["split", "train_end"])
+    ve = _req(cfg, ["split", "val_end"])
+    _check_split_bounds(train_df, val_df, test_df, time_col, te, ve)
+
+    print("[done] leakage/ordering checks complete.")
 
 if __name__ == "__main__":
     main()

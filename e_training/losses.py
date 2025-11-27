@@ -7,51 +7,65 @@ import torch
 import torch.nn as nn
 
 TargetTransform = Literal["none", "log1p"]
+LossName        = Literal["mse", "huber"]
+Reduction       = Literal["mean", "sum", "none"]
+
 
 @dataclass
 class LossConfig:
-    name: Literal["mse", "huber"] = "huber"
+    name: LossName = "huber"
     huber_delta: float = 1.0
     target_transform: TargetTransform = "none"
-    clip_target_max: Optional[float] = None  # clip both y and y_hat to this max (original scale)
+    clip_target_max: Optional[float] = None   # clip upper bound (original scale)
+    clip_pred_only: bool = False              # if True, clip only predictions
+    reduction: Reduction = "mean"
+    log1p_eps: float = 0.0                    # floor before log1p (e.g., 1e-8)
+
 
 class _TargetTransform(nn.Module):
-    def __init__(self, method: TargetTransform = "none"):
+    def __init__(self, method: TargetTransform = "none", eps: float = 0.0):
         super().__init__()
         self.method = method
+        self.eps = float(eps)
 
-    def forward(self, y: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.method == "none":
-            return y
+            return x
         if self.method == "log1p":
-            # stabilize negatives (shouldn't happen for PM2.5, but guard anyway)
-            return torch.log1p(torch.clamp_min(y, 0.0))
+            # enforce non-negativity with small floor if provided
+            return torch.log1p(torch.clamp_min(x, self.eps if self.eps > 0.0 else 0.0))
         raise ValueError(f"Unknown target_transform={self.method}")
+
 
 class LossWrapper(nn.Module):
     """
-    Applies optional clipping/transform consistently to y and y_hat
-    before computing loss. Model should output ORIGINAL scale.
+    Wraps a base loss with optional clipping and a shared target transform.
+    Model should emit ORIGINAL-scale predictions.
     """
     def __init__(self, cfg: LossConfig):
         super().__init__()
         self.cfg = cfg
         if cfg.name == "mse":
-            self.base = nn.MSELoss()
+            self.base = nn.MSELoss(reduction=cfg.reduction)
         elif cfg.name == "huber":
-            self.base = nn.HuberLoss(delta=cfg.huber_delta)
+            self.base = nn.HuberLoss(delta=cfg.huber_delta, reduction=cfg.reduction)
         else:
             raise ValueError(f"Unknown loss name: {cfg.name}")
+        self.txfm = _TargetTransform(cfg.target_transform, eps=cfg.log1p_eps)
 
-        self.txfm = _TargetTransform(cfg.target_transform)
+    def _maybe_clip(self, y_hat: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        maxv = self.cfg.clip_target_max
+        if maxv is None:
+            return y_hat, y
+        maxv = float(maxv)
+        if self.cfg.clip_pred_only:
+            return torch.clamp_max(y_hat, maxv), y
+        return torch.clamp_max(y_hat, maxv), torch.clamp_max(y, maxv)
 
     def forward(self, y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        # Optional clipping in ORIGINAL scale
-        if self.cfg.clip_target_max is not None:
-            maxv = float(self.cfg.clip_target_max)
-            y_hat = torch.clamp_max(y_hat, maxv)
-            y = torch.clamp_max(y, maxv)
-        # Optional shared transform
+        # clip in ORIGINAL scale first
+        y_hat, y = self._maybe_clip(y_hat, y)
+        # apply the SAME transform to both (keeps symmetry)
         y_hat_t = self.txfm(y_hat)
         y_t     = self.txfm(y)
         return self.base(y_hat_t, y_t)

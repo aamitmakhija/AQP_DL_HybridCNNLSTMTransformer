@@ -1,0 +1,110 @@
+Horizons: [3]
+=====================================
+[H=3] ep 001  train=0.131557  val=0.201351
+[H=3] ep 002  train=0.092610  val=0.187151
+[H=3] ep 003  train=0.088992  val=0.185363
+[H=3] ep 004  train=0.087053  val=0.185096
+[H=3] ep 005  train=0.085184  val=0.180311
+[H=3] ep 006  train=0.083660  val=0.180832
+[H=3] ep 007  train=0.082902  val=0.180164
+[H=3] ep 008  train=0.081682  val=0.181548
+[H=3] ep 009  train=0.080673  val=0.176811
+[H=3] ep 010  train=0.079772  val=0.172790
+[H=3] ep 011  train=0.079029  val=0.173003
+[H=3] ep 012  train=0.078815  val=0.170742
+[H=3] ep 013  train=0.078094  val=0.167731
+[H=3] ep 014  train=0.077560  val=0.164006
+[H=3] ep 015  train=0.077113  val=0.156580
+[H=3] ep 016  train=0.076549  val=0.153987
+[H=3] ep 017  train=0.076194  val=0.152899
+[H=3] ep 018  train=0.075676  val=0.155350
+[H=3] ep 019  train=0.075340  val=0.145642
+[H=3] ep 020  train=0.074813  val=0.149845
+[H=3] ep 021  train=0.074503  val=0.149732
+[H=3] ep 022  train=0.074172  val=0.149469
+[H=3] ep 023  train=0.073875  val=0.142413
+[H=3] ep 024  train=0.073449  val=0.143934
+[H=3] ep 025  train=0.073162  val=0.142410
+[H=3] ep 026  train=0.072908  val=0.141678
+[H=3] ep 027  train=0.072546  val=0.141219
+[H=3] ep 028  train=0.072252  val=0.141401
+[H=3] ep 029  train=0.071875  val=0.142571
+[H=3] ep 030  train=0.071622  val=0.144740
+[H=3] ep 031  train=0.071186  val=0.146991
+[H=3] ep 032  train=0.070895  val=0.141406
+[H=3] ep 033  train=0.070614  val=0.140276
+[H=3] ep 034  train=0.070289  val=0.140512
+[H=3] ep 035  train=0.069894  val=0.142147
+[H=3] ep 036  train=0.069749  val=0.143163
+[H=3] ep 037  train=0.069366  val=0.142983
+[H=3] ep 038  train=0.069247  val=0.143637
+[H=3] ep 039  train=0.069076  val=0.146144
+[H=3] ep 040  train=0.068317  val=0.140005
+[H=3] ep 041  train=0.068468  val=0.138812
+[H=3] ep 042  train=0.067967  val=0.139624
+[H=3] ep 043  train=0.067782  val=0.144657
+[H=3] ep 044  train=0.067496  val=0.141837
+[H=3] ep 045  train=0.067012  val=0.143900
+[H=3] ep 046  train=0.066876  val=0.146462
+[H=3] ep 047  train=0.066385  val=0.146788
+[H=3] ep 048  train=0.066188  val=0.141047
+[H=3] ep 049  train=0.065445  val=0.141273
+[H=3] ep 050  train=0.064734  val=0.143716
+[H=3] ep 051  train=0.064155  val=0.146719
+[H=3] ep 052  train=0.063797  val=0.150307
+[H=3] ep 053  train=0.063462  val=0.145530
+[H=3] ep 054  train=0.063239  val=0.147346
+[H=3] ep 055  train=0.063137  val=0.150276
+[H=3] Early stopping at ep=55 (best ep=41, val=0.138812)
+[OK] checkpoints → experiments/artifacts/models_mps
+
+******** 05_eval_report ********
+[eval_report] Using CONFIG=configs/cpu.yaml
+[eval_report] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[eval_report] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/.venv/bin/python
+[eval_report] artifacts_dir=experiments/artifacts
+[eval_report] model_dir=experiments/artifacts/models_mps
+[eval_report] features_scaled_dir=experiments/artifacts/features_scaled_ps
+[eval_report] Launching: /Users/amitmakhija/Desktop/Model_Development/AQF_MP/.venv/bin/python -m e_training.eval_report
+
+[eval] Lock proposes 15 feature(s): ['CO_Concentration', 'NO2_Concentration', 'O3_Concentration', 'PM10_Concentration', 'SO2_Concentration', 'PM25_Concentration_lag1h', 'PM25_Concentration_lag3h', 'PM25_Concentration_lag6h', 'PM25_Concentration_lag12h', 'PM25_Concentration_lag24h', 'PM25_Concentration_lag48h', 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos']
+
+[test] rows=109,521  stations=175  time=[2015-03-31 01:00:00 → 2015-04-30 23:00:00]
+[test] NaN rate: y=0.013  X(sample)={CO_Concentration:0.018, NO2_Concentration:0.031, O3_Concentration:0.025, PM10_Concentration:0.038, SO2_Concentration:0.025, PM25_Concentration_lag1h:0.013, PM25_Concentration_lag3h:0.014, PM25_Concentration_lag6h:0.014}
+[test] Upper-bound windows (no NaN) H=1: ~46,314
+[test] Upper-bound windows (no NaN) H=3: ~46,139
+
+[eval] Horizon H=1
+[windows] loaded from shards: 45780 @ experiments/artifacts/seq/test/h=1 (with station_id)
+[eval] Effective input channels (C) = 15
+[eval] loaded train-time params from hybrid_h1_train_summary.json
+[load] experiments/artifacts/models_mps/hybrid_h1.pt
+[load] strict load OK
+[overall@H=1] rmse=19.4395  mae=11.4693  smape=23.7143  r2=0.7571
+[per-station@H=1] computed for 175 station(s)
+[save] per-station metrics → experiments/artifacts/reports/per_station_H1.csv (175 rows)
+[save] wrote experiments/artifacts/reports/preds_H1.csv  (45780 rows)
+[eval] Horizon H=3
+[windows] loaded from shards: 45606 @ experiments/artifacts/seq/test/h=3 (with station_id)
+[eval] Effective input channels (C) = 15
+[eval] loaded train-time params from hybrid_h3_train_summary.json
+[load] experiments/artifacts/models_mps/hybrid_h3.pt
+[load] strict load OK
+[overall@H=3] rmse=26.9638  mae=16.9968  smape=34.4281  r2=0.5323
+[per-station@H=3] computed for 175 station(s)
+[save] per-station metrics → experiments/artifacts/reports/per_station_H3.csv (175 rows)
+[save] wrote experiments/artifacts/reports/preds_H3.csv  (45606 rows)
+
+[OK] wrote experiments/artifacts/reports/eval_report.json
+[summary@H=1] rmse=19.4395  mae=11.4693  smape=23.7143  r2=0.7571
+[summary@H=3] rmse=26.9638  mae=16.9968  smape=34.4281  r2=0.5323
+
+******************************** eval report done ********************************
+
+******** ALL DONE ********
+(.venv) amitmakhija@MacBook-Pro repo % touch configs/overlays/scale_station.yaml
+(.venv) amitmakhija@MacBook-Pro repo % CONFIG="configs/cpu.yaml" bash a_scripts/run_all.sh
+ *  History restored 
+
+%                                                                               
+amitmakhija@MacBook-Pro repo % 

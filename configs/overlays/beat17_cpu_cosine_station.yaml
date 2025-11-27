@@ -1,0 +1,43 @@
+# Final controlled experiment overlay
+
+dl:
+  loss: huber
+  huber_delta: 4.0
+
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+
+  epochs: 320
+  patience: 20
+
+  # switch to cosine annealing with warm restarts
+  lr_scheduler:
+    name: cosine_annealing
+    T_max: 40
+    eta_min: 5.0e-6
+
+sequence:
+  lookback: 96
+  stride: 2
+  horizon: [1]
+
+model:
+  hybrid:
+    # keep the stable CNN/Transformer/LSTM from the 18.58 run
+    cnn_channels: [64, 64, 64]
+    cnn_dropout: 0.12
+
+    d_model: 192
+    nhead: 4
+    num_layers: 3
+
+    attn_dropout: 0.04
+    ffn_dropout: 0.12
+
+    # NEW – enable station embedding
+    use_station_embedding: true
+    station_embed_dim: 24     # safe capacity for CPU/MPS
+
+    lstm_hidden: 160
+    lstm_layers: 1
+    lstm_dropout: 0.10

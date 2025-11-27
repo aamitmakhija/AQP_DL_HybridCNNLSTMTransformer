@@ -1,7 +1,7 @@
 # e_training/baselines.py
 from __future__ import annotations
 from pathlib import Path
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 import os, json, time
 from copy import deepcopy
 
@@ -11,7 +11,7 @@ import pandas as pd
 
 # ---------------- config helpers ----------------
 def _deep_update(dst: Dict, src: Dict) -> Dict:
-    for k, v in src.items():
+    for k, v in (src or {}).items():
         if isinstance(v, dict) and isinstance(dst.get(k), dict):
             _deep_update(dst[k], v)
         else:
@@ -19,15 +19,15 @@ def _deep_update(dst: Dict, src: Dict) -> Dict:
     return dst
 
 def _load_cfg() -> Dict[str, Any]:
-    # Support CONFIG="a.yaml,b.yaml"
     base = yaml.safe_load(open("configs/default.yaml")) or {}
     cfg_env = os.environ.get("CONFIG", "").strip()
     if not cfg_env:
         return base
     merged = deepcopy(base)
     for p in [s.strip() for s in cfg_env.split(",") if s.strip()]:
-        overlay = yaml.safe_load(open(p)) or {}
-        _deep_update(merged, overlay)
+        ov = yaml.safe_load(open(p)) or {}
+        if isinstance(ov, dict):
+            _deep_update(merged, ov)
     return merged
 
 def _require(cfg: Dict[str, Any], path: List[str]) -> Any:
@@ -38,39 +38,82 @@ def _require(cfg: Dict[str, Any], path: List[str]) -> Any:
         cur = cur[k]
     return cur
 
+def _opt(cfg: Dict[str, Any], path: List[str], default: Any = None) -> Any:
+    cur: Any = cfg
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
 # ---------------- metric helpers ----------------
 def _metrics() -> Dict[str, Any]:
-    # Use your existing metrics registry
     from e_training.metrics import METRICS
     return METRICS
 
-# ---------------- data io ----------------
-def _resolve_paths(cfg: Dict[str, Any]) -> Tuple[Path, Path]:
+# ---------------- paths & formats ----------------
+def _resolve_paths_and_fmt(cfg: Dict[str, Any]) -> Tuple[Path, Path, Path, str, Dict[str, str]]:
     art = Path(_require(cfg, ["paths", "artifacts_dir"]))
+    # features_scaled_dir
     fs_rel = _require(cfg, ["paths", "features_scaled_dir"])
     fs_dir = Path(fs_rel) if Path(fs_rel).is_absolute() else (art / fs_rel)
-    return art, fs_dir
+    # reports_dir (fallback to artifacts_dir/reports)
+    reports_rel = _opt(cfg, ["paths", "reports_dir"], None)
+    reports_dir = (Path(reports_rel) if (reports_rel and Path(reports_rel).is_absolute())
+                   else (art / (reports_rel or "reports")))
 
-def _read_split(fs_dir: Path, name: str, id_col: str, tcol: str, ycol: str) -> pd.DataFrame:
-    p = fs_dir / f"{name}.parquet"
-    if not p.exists():
-        raise FileNotFoundError(f"{p} not found. Run scaling first.")
-    df = pd.read_parquet(p, columns=[id_col, tcol, ycol])
-    df[tcol] = pd.to_datetime(df[tcol], errors="coerce")
+    split_names: Dict[str, str] = (cfg.get("output", {}) or {}).get("split_filenames", {}) or {}
+    out_fmt: str = (cfg.get("scaling", {}) or {}).get(
+        "output_format",
+        (cfg.get("output", {}) or {}).get("format", "parquet"),
+    )
+    out_fmt = (out_fmt or "parquet").lower()
+    if out_fmt not in {"parquet", "feather", "csv"}:
+        out_fmt = "parquet"
+    return art, fs_dir, reports_dir, out_fmt, split_names
+
+def _split_path(fs_dir: Path, name: str, split_names: Dict[str, str], fmt: str) -> Path:
+    fname = split_names.get(name, f"{name}.{fmt}")
+    p = fs_dir / fname
+    return p if p.suffix else p.with_suffix("." + fmt)
+
+# ---------------- data io ----------------
+def _read_split_generic(path: Path, fmt: str, id_col: str, tcol: str, ycol: str) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found. Run scaling first.")
+    want = {id_col, tcol, ycol}
+    if fmt == "parquet":
+        try:
+            import pyarrow.parquet as pq
+            schema_cols = [c for c in pq.read_schema(str(path)).names if c in want]
+        except Exception:
+            schema_cols = list(want)
+        df = pd.read_parquet(path, columns=schema_cols)
+    elif fmt == "feather":
+        df = pd.read_feather(path)
+        df = df[[c for c in df.columns if c in want]]
+    elif fmt == "csv":
+        df = pd.read_csv(path, usecols=lambda c: c in want)
+    else:
+        raise SystemExit(f"Unsupported scaled split format: {fmt}")
+
+    missing = want - set(df.columns)
+    if missing:
+        raise KeyError(f"{path} missing columns: {sorted(missing)}; available={sorted(df.columns)}")
+
+    df[tcol] = pd.to_datetime(df[tcol], errors="coerce").dt.tz_localize(None)
     df[id_col] = df[id_col].astype(str)
-    return df.sort_values([id_col, tcol]).reset_index(drop=True)
 
+    df = df.sort_values([id_col, tcol]).drop_duplicates([id_col, tcol], keep="last").reset_index(drop=True)
+    return df
 
-def mk_lags(df: pd.DataFrame, id_col: str, ycol: str, L: int) -> pd.DataFrame:
-    """
-    Build lag features 1..L for ycol grouped by id_col.
-    Returns a new DataFrame with lag columns.
-    """
-    out = [df]  # keep original columns
-    for lag in range(1, L + 1):
-        out.append(df.groupby(id_col, group_keys=False)[ycol].shift(lag).rename(f"{ycol}_lag{lag}"))
+# ---------------- lag builder ----------------
+def _make_lags(df: pd.DataFrame, id_col: str, ycol: str, L: int) -> pd.DataFrame:
+    g = df.groupby(id_col, sort=False)[ycol]
+    out = [df]
+    for h in range(1, L + 1):
+        out.append(g.shift(h).rename(f"{ycol}_lag{h}"))
     return pd.concat(out, axis=1)
-
 
 # ---------------- baselines ----------------
 def _persistence_and_seasonal(
@@ -81,70 +124,42 @@ def _persistence_and_seasonal(
     seasonal_period: int,
 ) -> Dict[str, Dict[str, Dict[str, float] | Dict[str, str]]]:
     mets = _metrics()
-    out_pers: Dict[str, Dict[str, float] | Dict[str, str]] = {}
-    out_seas: Dict[str, Dict[str, float] | Dict[str, str]] = {}
-
+    out_p, out_s = {}, {}
     for H in horizons:
-        # Keep *separate* stacks for persistence and seasonal
-        y_true_p, y_pred_p = [], []
-        y_true_s, y_pred_s = [], []
-
+        ytp, ypp, yts, yps = [], [], [], []
         for _, g in df.groupby(id_col, sort=False):
-            s = g[ycol].astype(float)
+            s = g[ycol].to_numpy(dtype=np.float64, copy=False)
+            if s.size == 0:
+                continue
+            tgt = np.roll(s, -H); tgt[-H:] = np.nan
 
-            tgt  = s.shift(-H)                 # forecast target at horizon H
-            pers = s                           # persistence predictor
-            seas = s.shift(seasonal_period)    # seasonal-naive predictor
+            m = np.isfinite(tgt) & np.isfinite(s)
+            if m.any():
+                ytp.append(tgt[m]); ypp.append(s[m])
 
-            m_p = tgt.notna() & pers.notna()
-            if m_p.any():
-                y_true_p.append(tgt[m_p].to_numpy())
-                y_pred_p.append(pers[m_p].to_numpy())
+            seas = np.roll(s, seasonal_period)
+            seas[:seasonal_period] = np.nan
+            m2 = np.isfinite(tgt) & np.isfinite(seas)
+            if m2.any():
+                yts.append(tgt[m2]); yps.append(seas[m2])
 
-            m_s = tgt.notna() & seas.notna()
-            if m_s.any():
-                y_true_s.append(tgt[m_s].to_numpy())
-                y_pred_s.append(seas[m_s].to_numpy())
-
-        # Compute metrics for persistence
-        if y_true_p:
-            y_all_p = np.concatenate(y_true_p)
-            y_hat_p = np.concatenate(y_pred_p)
-            out_pers[str(H)] = {
-                "rmse": float(mets["rmse"](y_all_p, y_hat_p)),
-                "mae":  float(mets["mae"](y_all_p, y_hat_p)),
-                "smape":float(mets["smape"](y_all_p, y_hat_p)),
-                "r2":   float(mets["r2"](y_all_p, y_hat_p)),
+        def pack(y_true, y_pred):
+            if not y_true:
+                return {"note": "no_valid_rows", "n": 0}
+            yt = np.concatenate(y_true)
+            yp = np.concatenate(y_pred)
+            return {
+                "rmse": float(mets["rmse"](yt, yp)),
+                "mae":  float(mets["mae"](yt, yp)),
+                "smape":float(mets["smape"](yt, yp)),
+                "r2":   float(mets["r2"](yt, yp)),
+                "n":    int(yt.size),
             }
-        else:
-            out_pers[str(H)] = {"note": "no valid rows for persistence"}
 
-        # Compute metrics for seasonal
-        if y_true_s:
-            y_all_s = np.concatenate(y_true_s)
-            y_hat_s = np.concatenate(y_pred_s)
-            out_seas[str(H)] = {
-                "rmse": float(mets["rmse"](y_all_s, y_hat_s)),
-                "mae":  float(mets["mae"](y_all_s, y_hat_s)),
-                "smape":float(mets["smape"](y_all_s, y_hat_s)),
-                "r2":   float(mets["r2"](y_all_s, y_hat_s)),
-            }
-        else:
-            out_seas[str(H)] = {"note": "no valid rows for seasonal"}
+        out_p[str(H)] = pack(ytp, ypp)
+        out_s[str(H)] = pack(yts, yps)
 
-    return {"persistence": out_pers, "seasonal": out_seas}
-
-def _make_lags(df: pd.DataFrame, id_col: str, ycol: str, L: int) -> pd.DataFrame:
-    """
-    Add lag features 1..L for ycol grouped by id_col.
-    Builds all lag columns efficiently to avoid fragmentation warnings.
-    """
-    groups = df.groupby(id_col, sort=False)[ycol]
-    lagged = [
-        groups.shift(h).rename(f"{ycol}_lag{h}")
-        for h in range(1, L + 1)
-    ]
-    return pd.concat([df] + lagged, axis=1)
+    return {"persistence": out_p, "seasonal": out_s}
 
 def _ridge_direct(
     trainval: pd.DataFrame,
@@ -153,40 +168,38 @@ def _ridge_direct(
     ycol: str,
     H: int,
     lookback: int,
-) -> Tuple[np.ndarray, np.ndarray, str | None]:
-    """
-    Direct ridge baseline for horizon H using lags 1..lookback of ycol (per-station).
-    Returns: (y_true, y_pred, err_msg_or_None)
-    """
+    alpha: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray, Optional[str]]:
     try:
         from sklearn.linear_model import Ridge
+        from sklearn.preprocessing import StandardScaler
     except Exception:
         return np.array([]), np.array([]), "sklearn_not_available"
 
-    # Build lag features efficiently (your vectorized helper)
-    trv = _make_lags(trainval, id_col, ycol, lookback).copy()
-    te  = _make_lags(test_df,  id_col, ycol, lookback).copy()
+    trv = _make_lags(trainval, id_col, ycol, lookback)
+    te  = _make_lags(test_df,  id_col, ycol, lookback)
 
-    # Create direct target y_{t+H}
     trv["y_tgt"] = trv.groupby(id_col, sort=False)[ycol].shift(-H)
     te["y_tgt"]  = te .groupby(id_col, sort=False)[ycol].shift(-H)
 
     lag_cols = [f"{ycol}_lag{h}" for h in range(1, lookback + 1)]
+    needed = lag_cols + ["y_tgt"]
 
-    # Keep rows with complete features and target
-    trv2 = trv.dropna(subset=lag_cols + ["y_tgt"])
-    te2  = te .dropna(subset=lag_cols + ["y_tgt"])
-
+    trv2 = trv.dropna(subset=needed)
+    te2  = te .dropna(subset=needed)
     if trv2.empty or te2.empty:
         return np.array([]), np.array([]), "insufficient_rows"
 
-    Xtr = trv2[lag_cols].to_numpy(dtype=float)
-    ytr = trv2["y_tgt"].to_numpy(dtype=float)
+    Xtr = trv2[lag_cols].to_numpy(dtype=np.float64, copy=False)
+    ytr = trv2["y_tgt"].to_numpy(dtype=np.float64, copy=False)
+    Xte = te2[lag_cols].to_numpy(dtype=np.float64, copy=False)
+    yte = te2["y_tgt"].to_numpy(dtype=np.float64, copy=False)
 
-    Xte = te2[lag_cols].to_numpy(dtype=float)
-    yte = te2["y_tgt"].to_numpy(dtype=float)
+    ss = StandardScaler().fit(Xtr)
+    Xtr = ss.transform(Xtr)
+    Xte = ss.transform(Xte)
 
-    model = Ridge(alpha=1.0)
+    model = Ridge(alpha=float(alpha))
     model.fit(Xtr, ytr)
     yhat = model.predict(Xte)
 
@@ -197,72 +210,106 @@ def main():
     t0 = time.time()
     cfg = _load_cfg()
 
-    # Paths and schema
-    art, fs_dir = _resolve_paths(cfg)
+    # Paths, formats, names
+    art, fs_dir, reports_dir, fmt, split_names = _resolve_paths_and_fmt(cfg)
+    baselines_dir = reports_dir / "baselines"
+    baselines_dir.mkdir(parents=True, exist_ok=True)
+
+    # Schema
     id_col = _require(cfg, ["data", "id_col"])
     tcol   = _require(cfg, ["data", "time_col"])
     ycol   = _require(cfg, ["data", "target"])
 
+    # Sequence params
     seq = _require(cfg, ["sequence"])
-    # horizons can be list under 'horizon' or 'horizons'
-    if "horizons" in seq:
-        horizons = [int(h) for h in seq["horizons"]]
-    else:
-        raw_h = seq.get("horizon", [1])
-        horizons = [int(h) for h in (raw_h if isinstance(raw_h, (list, tuple)) else [raw_h])]
+    raw_h = seq.get("horizons", seq.get("horizon", [1]))
+    horizons = [int(h) for h in (raw_h if isinstance(raw_h, (list, tuple)) else [raw_h])]
     lookback = int(_require(seq, ["lookback"]))
 
-    seasonal_period = int(cfg.get("baselines", {}).get("seasonal_period", 168))  # configurable; default weekly (24*7)
+    # Baseline knobs
+    seasonal_period = int(_opt(cfg, ["baselines", "seasonal_period"], 168))
+    ridge_alpha     = float(_opt(cfg, ["baselines", "ridge_alpha"], 1.0))
+    save_pred       = bool(_opt(cfg, ["baselines", "save_pred_samples"], False))
 
+    # Splits
     tr_name = _require(seq, ["train_split"])
     va_name = _require(seq, ["val_split"])
     te_name = seq.get("test_split", "test")
 
-    # Load
-    train = _read_split(fs_dir, tr_name, id_col, tcol, ycol)
-    val   = _read_split(fs_dir, va_name, id_col, tcol, ycol)
-    test  = _read_split(fs_dir, te_name, id_col, tcol, ycol)
+    tr_path = _split_path(fs_dir, tr_name, split_names, fmt)
+    va_path = _split_path(fs_dir, va_name, split_names, fmt)
+    te_path = _split_path(fs_dir, te_name, split_names, fmt)
 
-    # Persistence & Seasonal on TEST
+    train = _read_split_generic(tr_path, fmt, id_col, tcol, ycol)
+    val   = _read_split_generic(va_path, fmt, id_col, tcol, ycol)
+    test  = _read_split_generic(te_path, fmt, id_col, tcol, ycol)
+
+    # Persistence & Seasonal (TEST)
     ps = _persistence_and_seasonal(test, id_col, ycol, horizons, seasonal_period)
 
-    # Ridge on TRAIN+VAL -> TEST for each H
+    # Ridge (TRAIN+VAL -> TEST)
     mets = _metrics()
     res_ridge: Dict[str, Dict[str, float] | Dict[str, str]] = {}
+    counts_ridge: Dict[str, int] = {}
     trainval = pd.concat([train, val], axis=0, ignore_index=True)
 
+    if save_pred:
+        (baselines_dir / "samples").mkdir(parents=True, exist_ok=True)
+
     for H in horizons:
-        yref, yhat, err = _ridge_direct(trainval, test, id_col, ycol, H, lookback)
+        yref, yhat, err = _ridge_direct(trainval, test, id_col, ycol, H, lookback, alpha=ridge_alpha)
         if err or yref.size == 0:
-            res_ridge[str(H)] = {"note": err or "empty"}  # type: ignore[assignment]
+            res_ridge[str(H)] = {"note": err or "empty", "n": 0}
+            counts_ridge[str(H)] = 0
         else:
             res_ridge[str(H)] = {
                 "rmse": float(mets["rmse"](yref, yhat)),
                 "mae":  float(mets["mae"](yref, yhat)),
                 "smape":float(mets["smape"](yref, yhat)),
                 "r2":   float(mets["r2"](yref, yhat)),
+                "n":    int(yref.size),
             }
+            counts_ridge[str(H)] = int(yref.size)
+            if save_pred:
+                samp = min(5000, yref.size)
+                dfp = pd.DataFrame({"y_true": yref[:samp], "y_pred": yhat[:samp]})
+                dfp.to_csv(baselines_dir / "samples" / f"ridge_samples_H{H}.csv", index=False)
 
+    # Pack & write
     out = {
         "config": {
             "horizons": horizons,
             "lookback": lookback,
             "seasonal_period": seasonal_period,
+            "ridge_alpha": ridge_alpha,
             "id_col": id_col,
             "time_col": tcol,
             "target_col": ycol,
             "features_scaled_dir": str(fs_dir),
+            "format": fmt,
+            "split_names": split_names,
+            "splits": {"train": str(tr_path), "val": str(va_path), "test": str(te_path)},
         },
         "persistence": ps["persistence"],
-        "seasonal168": ps["seasonal"],   # name kept for continuity; period is configurable
+        "seasonal168": ps["seasonal"],
         "ridge": res_ridge,
         "runtime_sec": round(time.time() - t0, 3),
     }
 
-    out_path = art / "models" / "baselines.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(out, indent=2))
-    print(f"[OK] baselines → {out_path}  (took {out['runtime_sec']}s)")
+    out_json = baselines_dir / "baselines.json"
+    out_csv  = baselines_dir / "baselines_summary.csv"
+
+    out_json.write_text(json.dumps(out, indent=2))
+    # compact CSV summary for quick compare
+    rows = []
+    for name, block in (("persistence", out["persistence"]),
+                        ("seasonal168", out["seasonal168"]),
+                        ("ridge", out["ridge"])):
+        for H, m in block.items():
+            rows.append({"baseline": name, "H": int(H), **{k: v for k, v in m.items() if k != "note"}})
+    pd.DataFrame(rows).to_csv(out_csv, index=False)
+
+    print(f"[OK] baselines → {out_json}  (took {out['runtime_sec']}s)")
 
 if __name__ == "__main__":
     main()

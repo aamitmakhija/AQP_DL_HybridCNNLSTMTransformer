@@ -1,0 +1,9 @@
+# ============================
+# Cosine Annealing LR Scheduler (GPU)
+# ============================
+dl:
+  lr_scheduler:
+    name: cosine
+    T_0: 20          # first cycle (epochs)
+    T_mult: 2        # expand cycles
+    eta_min: 1.0e-6  # low floor

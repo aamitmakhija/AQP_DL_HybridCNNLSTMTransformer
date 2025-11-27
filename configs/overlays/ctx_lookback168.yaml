@@ -1,0 +1,3 @@
+sequence:
+  lookback: 168
+  stride: 2

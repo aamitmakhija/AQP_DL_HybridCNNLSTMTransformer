@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Prepare tiny data
+        run: |
+          mkdir -p raw_data
+          # create tiny 10-row CSVs with required headers
+          python - <<'PY'
+import pandas as pd, numpy as np
+def save(df, path): df.to_csv(path, index=False)
+N=10
+save(pd.DataFrame({"station_id":[1001]*N,"Datetime":pd.date_range("2015-01-01", periods=N, freq="H"),
+                   "PM25_Concentration":np.random.randint(5,50,N),
+                   "PM10_Concentration":np.random.randint(10,80,N),
+                   "NO2_Concentration":np.random.randint(5,60,N),
+                   "SO2_Concentration":np.random.randint(1,20,N),
+                   "O3_Concentration":np.random.randint(5,60,N),
+                   "CO_Concentration":np.random.randint(1,10,N)}), "raw_data/airquality.csv")
+save(pd.DataFrame({"ID":[1]*N,
+                   "Time":pd.date_range("2015-01-01", periods=N, freq="H"),
+                   "Weather":["Clear"]*N,
+                   "Temperature":np.random.rand(N)*10+20,
+                   "Pressure":np.random.rand(N)*10+1000,
+                   "Humidity":np.random.rand(N)*20+40,
+                   "Wind Speed":np.random.rand(N)*5,
+                   "Wind Direction":[90]*N}), "raw_data/meteorology.csv")
+save(pd.DataFrame({"Station ID":[1001]*1,"District ID":[1]*1}), "raw_data/station.csv")
+save(pd.DataFrame({"District ID":[1]*1,"City ID":[1]*1}), "raw_data/district.csv")
+save(pd.DataFrame({"City ID":[1]*1}), "raw_data/city.csv")
+save(pd.DataFrame({"ID":[1]*N,
+                   "Forecast Time":pd.date_range("2015-01-01", periods=N, freq="H"),
+                   "Future Time":pd.date_range("2015-01-01", periods=N, freq="H"),
+                   "Weather":["Clear"]*N,
+                   "Up temperature":[30]*N,
+                   "Bottom Temperature":[20]*N,
+                   "Wind Level":[1]*N,
+                   "Wind Direction":[90]*N}), "raw_data/weatherforecast.csv")
+PY
+
+      - name: Smoke run (no GPU)
+        env:
+          OMP_NUM_THREADS: "2"
+        run: |
+          source .venv/bin/activate
+          CONFIG="configs/default.yaml,configs/keep.yaml,configs/smoke.yaml" bash a_scripts/00_clean.sh
+          CONFIG="configs/default.yaml,configs/keep.yaml,configs/smoke.yaml" bash a_scripts/01_make_data.sh
+          CONFIG="configs/default.yaml,configs/keep.yaml,configs/smoke.yaml" bash a_scripts/02_dataprep.sh
+          CONFIG="configs/default.yaml,configs/keep.yaml,configs/smoke.yaml" bash a_scripts/03_modelprep.sh
+          CONFIG="configs/default.yaml,configs/keep.yaml,configs/smoke.yaml" bash a_scripts/04_train_hybrid.sh
+          CONFIG="configs/default.yaml,configs/keep.yaml,configs/smoke.yaml" bash a_scripts/05_eval_report.sh

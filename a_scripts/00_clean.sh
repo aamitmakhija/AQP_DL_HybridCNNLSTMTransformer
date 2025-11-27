@@ -1,34 +1,14 @@
 #!/usr/bin/env bash
-# ============================================================
-# 00_clean.sh
-# ------------------------------------------------------------
-# Purpose:
-#   Cleans previous experiment artifacts to ensure a fresh run.
-#   Removes old sequence windows, scaled features, model checkpoints,
-#   and evaluation reports that can cause mismatched state_dicts
-#   or outdated data.
-#
-# Usage:
-#   ./a_scripts/00_clean.sh                # standard clean
-#   ./a_scripts/00_clean.sh --dry-run      # show what would be removed
-#   ./a_scripts/00_clean.sh --deep         # also remove features, splits, locks
-#   ./a_scripts/00_clean.sh --models-only  # only wipe models + reports
-#   ./a_scripts/00_clean.sh --relock       # only remove feature lock
-#
-# Safe to run multiple times.
-# ============================================================
+# a_scripts/00_clean.sh
+# Fresh cleanup of experiment artifacts (safe on macOS/Linux).
 
 set -euo pipefail
 
-# ---------- CLI flags ----------
-DRY_RUN=false
-DEEP=false
-MODELS_ONLY=false
-RELOCK=false
-
+# ---- options ----
+DRY=false; DEEP=false; MODELS_ONLY=false; RELOCK=false
 for arg in "$@"; do
   case "$arg" in
-    --dry-run)      DRY_RUN=true ;;
+    --dry-run)      DRY=true ;;
     --deep)         DEEP=true ;;
     --models-only)  MODELS_ONLY=true ;;
     --relock)       RELOCK=true ;;
@@ -36,112 +16,87 @@ for arg in "$@"; do
   esac
 done
 
-# ---------- Paths ----------
-ART_DIR="experiments/artifacts"
+# ---- roots (override via env if needed) ----
+ART_DIR="${ART_DIR:-experiments/artifacts}"
 
-# ---------- Removal groups ----------
-# Standard clean: fast and safe; clears regenerated artifacts.
-STANDARD_REMOVE=(
-  "${ART_DIR}/seq"
-  "${ART_DIR}/features_scaled_ps"
-  "${ART_DIR}/features_scaled"
-  "${ART_DIR}/models"
-  "${ART_DIR}/reports"
-  "${ART_DIR}/checkpoints"
-  "${ART_DIR}/duplicates_summary.json"
-  "${ART_DIR}/split_summary.json"
-)
-
-# Deep clean: includes features, splits, dataset stream, and locks.
-DEEP_EXTRA_REMOVE=(
-  "${ART_DIR}/features"
-  "${ART_DIR}/features_locked"
-  "${ART_DIR}/splits"
-  "${ART_DIR}/dataset_stream"
-)
-
-# Models-only: just models and reports.
-MODELS_ONLY_REMOVE=(
-  "${ART_DIR}/models"
-  "${ART_DIR}/reports"
-  "${ART_DIR}/checkpoints"
-)
-
-# Relock: minimal mode—only removes the feature lock folder.
-RELOCK_REMOVE=(
-  "${ART_DIR}/features_locked"
-)
-
-# ---------- Helpers ----------
 say() { printf "%s\n" "$*"; }
-exists() { [[ -e "$1" ]]; }
-rm_path() {
+exists() { [ -e "$1" ]; }
+zap() {
   local p="$1"
   if exists "$p"; then
-    if $DRY_RUN; then
-      say " - would remove: $p"
-    else
-      rm -rf "$p"
-      say " - removed:     $p"
-    fi
+    $DRY && say " - would remove: $p" || { rm -rf "$p"; say " - removed:     $p"; }
   else
     say " - not found:    $p"
   fi
 }
 
-# ---------- Header ----------
 say "****************************************"
-say "[00_clean] Starting cleanup"
-say "  repo: $(pwd)"
-say "  artifacts root: ${ART_DIR}"
-$DRY_RUN && say "  mode: DRY RUN (no files will be deleted)"
-$DEEP && say "  mode: DEEP CLEAN (features/splits/locks will be removed)"
-$MODELS_ONLY && say "  mode: MODELS ONLY (only models/reports/checkpoints)"
-$RELOCK && say "  mode: RELOCK (only removes feature lock)"
+say "[00_clean] repo=$(pwd)"
+say "[00_clean] artifacts=${ART_DIR}"
+$DRY        && say "[00_clean] mode: DRY RUN"
+$DEEP       && say "[00_clean] mode: DEEP"
+$MODELS_ONLY&& say "[00_clean] mode: MODELS ONLY"
+$RELOCK     && say "[00_clean] mode: RELOCK"
 say "****************************************"
 
-# ---------- Selection ----------
-TO_REMOVE=()
+# ---- removal sets ----
+STANDARD_REMOVE="
+${ART_DIR}/seq
+${ART_DIR}/features_scaled_ps
+${ART_DIR}/features_scaled
+${ART_DIR}/models
+${ART_DIR}/models_mps
+${ART_DIR}/reports
+${ART_DIR}/checkpoints
+${ART_DIR}/duplicates_summary.json
+${ART_DIR}/split_summary.json
+"
 
-if $MODELS_ONLY; then
-  TO_REMOVE=("${MODELS_ONLY_REMOVE[@]}")
-elif $RELOCK; then
-  TO_REMOVE=("${RELOCK_REMOVE[@]}")
-else
-  TO_REMOVE=("${STANDARD_REMOVE[@]}")
-  if $DEEP; then
-    TO_REMOVE+=("${DEEP_EXTRA_REMOVE[@]}")
-  fi
-fi
+DEEP_EXTRA_REMOVE="
+${ART_DIR}/features
+${ART_DIR}/features_locked
+${ART_DIR}/splits
+${ART_DIR}/dataset_stream
+"
 
-# ---------- Do the work ----------
-say "[00_clean] Removing artifacts:"
-for p in "${TO_REMOVE[@]}"; do
-  rm_path "$p"
+MODELS_ONLY_REMOVE="
+${ART_DIR}/models
+${ART_DIR}/models_mps
+${ART_DIR}/reports
+${ART_DIR}/checkpoints
+"
+
+RELOCK_REMOVE="
+${ART_DIR}/features_locked
+"
+
+# ---- choose set ----
+TO_REMOVE="$STANDARD_REMOVE"
+$DEEP        && TO_REMOVE="$TO_REMOVE
+$DEEP_EXTRA_REMOVE"
+$MODELS_ONLY && TO_REMOVE="$MODELS_ONLY_REMOVE"
+$RELOCK      && TO_REMOVE="$RELOCK_REMOVE"
+
+# ---- do work ----
+say "[00_clean] Removing:"
+# shellcheck disable=SC2086
+for p in $TO_REMOVE; do
+  [ -n "$p" ] && zap "$p"
 done
 
-# Recreate necessary dirs
-RECREATE_DIRS=(
-  "${ART_DIR}/models"
-  "${ART_DIR}/reports"
-)
-
-if $DRY_RUN; then
-  for d in "${RECREATE_DIRS[@]}"; do
-    say " - would create: $d"
-  done
+# ---- recreate minimal dirs for fresh outputs ----
+RECREATE="
+${ART_DIR}/models
+${ART_DIR}/models_mps
+${ART_DIR}/reports
+"
+if $DRY; then
+  for d in $RECREATE; do [ -n "$d" ] && say " - would create: $d"; done
 else
-  for d in "${RECREATE_DIRS[@]}"; do
-    mkdir -p "$d"
-    say " - created:      $d"
-  done
+  for d in $RECREATE; do [ -n "$d" ] && { mkdir -p "$d"; say " - created:      $d"; }; done
 fi
 
 say "****************************************"
+$DRY || say "[00_clean] Fresh dirs → ${ART_DIR}/models, ${ART_DIR}/models_mps, ${ART_DIR}/reports"
 say "[00_clean] Done."
-$DRY_RUN || {
-  say "[00_clean] Fresh directories ready:"
-  say "           → ${ART_DIR}/models"
-  say "           → ${ART_DIR}/reports"
-}
 say "****************************************"

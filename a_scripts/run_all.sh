@@ -16,7 +16,10 @@ export NUMEXPR_NUM_THREADS=${NUMEXPR_NUM_THREADS:-6}
 # CONFIG="configs/default.yaml,configs/keep.yaml" bash a_scripts/run_all.sh
 set -euo pipefail
 
-
+cd "$(dirname "$0")/.."  # repo root
+: "${PYTHONPATH:=}"
+export PYTHONPATH="$PWD:${PYTHONPATH}"
+# ... rest as-is
 
 # Pretty banners
 banner() { printf '\n******** %s ********\n' "$*"; }

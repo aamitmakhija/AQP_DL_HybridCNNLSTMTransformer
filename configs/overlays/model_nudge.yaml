@@ -1,0 +1,8 @@
+# overlays/model_nudge.yaml
+model:
+  hybrid:
+    d_model: 192
+    nhead: 6
+    num_layers: 2
+    cnn_dropout: 0.10
+    ffn_dropout: 0.12

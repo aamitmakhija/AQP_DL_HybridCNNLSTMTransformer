@@ -1,0 +1,23 @@
+# configs/<yours>.yaml
+
+# keep this on (you already have it)
+model:
+  hybrid:
+    impl: hybrid_cnn_transformer
+    use_station_embedding: true
+    station_embed_dim: 16
+    # OPTION A: let training infer count from data (recommended)
+    # n_stations: null   # (omit this line entirely)
+    # OPTION B: pin it explicitly once you know it
+    # n_stations: 175    # example
+
+# ensure windows are written with sid
+sequence:
+  out_dir: seq
+  lookback: 96
+  horizon: [1, 3]
+  stride: 2
+  include_sid: true        # <- add this flag (windower reads it)
+
+  reports:
+  stations_keep_txt: reports/stations_keep.txt

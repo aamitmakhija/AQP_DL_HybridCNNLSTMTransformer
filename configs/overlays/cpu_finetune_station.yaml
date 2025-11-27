@@ -1,0 +1,25 @@
+# configs/overlays/cpu_finetune_station.yaml
+
+dl:
+  # slightly smaller step, smaller wd, longer training
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+  epochs: 350
+  patience: 22
+  lr_scheduler:
+    name: reduce_on_plateau
+    factor: 0.5
+    patience: 8
+    min_lr: 5.0e-6
+  huber_delta: 6.0   # a bit less aggressive than 4, can help extremes
+
+model:
+  hybrid:
+    # keep same transformer depth, just enrich with station embedding
+    use_station_embedding: true
+    station_embed_dim: 16
+
+    # same channels as golden baseline; just nudge regularisation down a bit
+    cnn_dropout: 0.10     # was 0.15
+    attn_dropout: 0.04    # was 0.05
+    ffn_dropout: 0.10     # was 0.15

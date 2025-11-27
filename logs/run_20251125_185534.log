@@ -1,0 +1,34 @@
+[run_all] CONFIG=configs/default.yaml
+
+******** 00_clean ********
+****************************************
+[00_clean] repo=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[00_clean] artifacts=experiments/artifacts
+****************************************
+[00_clean] Removing:
+ - removed:     experiments/artifacts/seq
+ - removed:     experiments/artifacts/features_scaled_ps
+ - not found:    experiments/artifacts/features_scaled
+ - removed:     experiments/artifacts/models
+ - removed:     experiments/artifacts/models_mps
+ - removed:     experiments/artifacts/reports
+ - not found:    experiments/artifacts/checkpoints
+ - not found:    experiments/artifacts/duplicates_summary.json
+ - not found:    experiments/artifacts/split_summary.json
+ - created:      experiments/artifacts/models
+ - created:      experiments/artifacts/models_mps
+ - created:      experiments/artifacts/reports
+****************************************
+[00_clean] Fresh dirs → experiments/artifacts/models, experiments/artifacts/models_mps, experiments/artifacts/reports
+[00_clean] Done.
+****************************************
+
+******** 01_make_data ********
+[01_make_data.sh] Using CONFIG=configs/default.yaml
+[01_make_data.sh] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[01_make_data.sh] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python
+[1/3] b_ingestion/01_csv2parquet_safe.py
+[csv2parquet] CONFIG=configs/default.yaml
+[csv2parquet] DATA_DIR=raw_data  →  ART_DIR=experiments/artifacts
+[OK] wrote air, met, station, district, city, forecast in experiments/artifacts
+[2/3] b_ingestion/02_build_stream.py

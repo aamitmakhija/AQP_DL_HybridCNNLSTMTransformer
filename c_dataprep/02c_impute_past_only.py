@@ -1,113 +1,148 @@
 #!/usr/bin/env python3
+# c_dataprep/02c_impute_past_only.py  (STRICT YAML, format-aware)
 from __future__ import annotations
-import sys, json
 from pathlib import Path
+import os, sys
+from typing import Any, Dict, List
+
 import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
-import yaml
-from copy import deepcopy
 
-# ---------- config ----------
-def deep_update(dst, src):
-    for k, v in (src or {}).items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            deep_update(dst[k], v)
-        else:
-            dst[k] = v
-    return dst
+from common.config_loader import load_cfg
 
-cfg_files = (sys.argv[1] if len(sys.argv) > 1 else "configs/default.yaml").split(",")
-cfg = yaml.safe_load(open("configs/default.yaml"))
-for f in cfg_files:
-    f = f.strip()
-    if not f or f == "configs/default.yaml":
-        continue
-    with open(f, "r") as fh:
-        deep_update(cfg, yaml.safe_load(fh) or {})
+# ---------- tiny utils ----------
+def _req(d: Dict[str, Any], path: List[str]) -> Any:
+    cur: Any = d
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur or cur[k] is None:
+            raise KeyError("configs: missing " + ".".join(path))
+        cur = cur[k]
+    return cur
 
-ART_DIR   = Path(cfg["paths"]["artifacts_dir"])
-FEAT_DIR  = ART_DIR / cfg["paths"]["features_dir"]
-FEAT_FILE = FEAT_DIR / cfg["features"]["output"]["features_file"]
+def _under(root: Path, p: str) -> Path:
+    P = Path(p)
+    return P if P.is_absolute() else (root / P)
 
-id_col   = cfg["data"]["id_col"]
-time_col = cfg["data"]["time_col"]
-target   = cfg["data"]["target"]
+def _ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
 
-imp_cfg    = (cfg.get("missing", {}) or {}).get("impute", {}) or {}
-ENABLED    = bool(imp_cfg.get("enabled", True))
-FFILL_LIM  = int(imp_cfg.get("ffill_limit", 6))
-ROLL_WIN   = int(imp_cfg.get("rolling_window", 24))
-USE_MEDIAN = bool(imp_cfg.get("median_fallback", True))
+def _read_df(path: Path, fmt: str) -> pd.DataFrame:
+    f = (fmt or "").lower()
+    if f == "parquet": return pd.read_parquet(path)
+    if f == "feather": return pd.read_feather(path)
+    if f == "csv":     return pd.read_csv(path)
+    raise SystemExit(f"Unsupported features.output.format: {fmt!r}")
 
-if not ENABLED:
-    print("[impute] disabled via config; exiting.")
-    sys.exit(0)
+def _write_df(df: pd.DataFrame, path: Path, fmt: str) -> None:
+    _ensure_dir(path.parent)
+    f = (fmt or "").lower()
+    if f == "parquet": df.to_parquet(path, index=False)
+    elif f == "feather": df.reset_index(drop=True).to_feather(path)
+    elif f == "csv": df.to_csv(path, index=False)
+    else: raise SystemExit(f"Unsupported features.output.format: {fmt!r}")
 
-print("[impute] loading features:", FEAT_FILE)
-df = pq.read_table(FEAT_FILE).to_pandas()
+# ---------- main ----------
+def main() -> None:
+    cfg = load_cfg()
 
-# ---------- column selection ----------
-# Only impute numeric *feature* columns. Never touch id/time/target (labels).
-df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
-if id_col in df.columns:
-    df[id_col] = df[id_col].astype(str)
+    # paths (strict)
+    art_dir  = _under(Path("."), _req(cfg, ["paths", "artifacts_dir"]))
+    feat_dir = _under(art_dir, _req(cfg, ["paths", "features_dir"]))
 
-df = df.sort_values([id_col, time_col])
+    # schema (strict)
+    id_col   = _req(cfg, ["data", "id_col"])
+    time_col = _req(cfg, ["data", "time_col"])
+    target   = _req(cfg, ["data", "target"])
 
-exclude = {id_col, time_col, target}
-num_cols = [
-    c for c in df.columns
-    if c not in exclude and pd.api.types.is_numeric_dtype(df[c])
-]
+    # IO names + format (strict)
+    out_cfg        = _req(cfg, ["features", "output"])
+    io_fmt         = _req(out_cfg, ["format"])                 # parquet|feather|csv
+    in_name        = _req(out_cfg, ["features_file"])
+    out_name       = _req(out_cfg, ["features_file_imputed"])
+    activate       = bool(_req(out_cfg, ["activate_imputed"])) # True/False
+    activate_mode  = str(_req(out_cfg, ["activate_mode"]))     # symlink|overwrite
 
-if not num_cols:
-    print("[impute] no numeric feature columns detected; nothing to do.")
-    sys.exit(0)
+    # impute params (strict)
+    imp_cfg    = _req(cfg, ["missing", "impute"])
+    enabled    = bool(_req(imp_cfg, ["enabled"]))
+    ffill_lim  = int(_req(imp_cfg, ["ffill_limit"]))
+    roll_win   = int(_req(imp_cfg, ["rolling_window"]))
+    use_median = bool(_req(imp_cfg, ["median_fallback"]))
 
-def impute_group(g: pd.DataFrame) -> pd.DataFrame:
-    g = g.sort_values(time_col).copy()
+    if not enabled:
+        print("[impute] disabled via YAML; exiting.")
+        sys.exit(0)
 
-    # 1) short forward-fill (bounded; past-only)
-    g[num_cols] = g[num_cols].ffill(limit=FFILL_LIM)
+    in_path  = feat_dir / in_name
+    out_path = feat_dir / out_name
+    if not in_path.exists():
+        raise FileNotFoundError(f"features not found: {in_path}")
 
-    # 2) past-only rolling mean (shift(1) ensures strictly prior info)
-    past_mean = (
-        g[num_cols]
-        .rolling(window=ROLL_WIN, min_periods=1)
-        .mean()
-        .shift(1)
-    )
-    g[num_cols] = g[num_cols].combine_first(past_mean)
+    print(f"[config] CONFIG={os.environ.get('CONFIG','<unset>')}")
+    print(f"[impute] loading: {in_path}  (format={io_fmt})")
 
-    # 3) optional fallback: past-only expanding median
-    if USE_MEDIAN:
-        past_median = g[num_cols].expanding(min_periods=1).median().shift(1)
-        g[num_cols] = g[num_cols].combine_first(past_median)
+    df = _read_df(in_path, io_fmt)
 
-    return g
+    # guards
+    if time_col not in df.columns or id_col not in df.columns:
+        raise SystemExit(f"columns missing: expected [{id_col},{time_col}] in {in_path}")
 
-print(f"[impute] applying past-only imputation: ffill_limit={FFILL_LIM}, rolling_window={ROLL_WIN}, median_fallback={USE_MEDIAN}")
-# Prefer include_groups=False when available (pandas >=2.2)
-gb = df.groupby(id_col, group_keys=False, sort=False)
-try:
-    df = gb.apply(impute_group, include_groups=False)
-except TypeError:
-    df = gb.apply(impute_group)
+    # canonical order
+    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
+    # normalize station_id ONLY where not null; preserve real NaNs
+    sid = df[id_col]
+    m = sid.notna()
+    df[id_col] = sid.astype("object")               # keep NaN as NaN
+    df.loc[m, id_col] = sid.loc[m].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    df.sort_values([id_col, time_col], inplace=True)
 
-OUT_FILE = FEAT_DIR / "dataset_features_imputed.parquet"
-OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-pq.write_table(pa.Table.from_pandas(df, preserve_index=False), OUT_FILE)
-print("[impute] wrote:", OUT_FILE)
+    # numeric feature columns only (exclude id/time/target)
+    exclude = {id_col, time_col, target}
+    num_cols = [c for c in df.columns if c not in exclude and pd.api.types.is_numeric_dtype(df[c])]
+    if not num_cols:
+        print("[impute] no numeric features; nothing to do.")
+        sys.exit(0)
 
-# Make the imputed file the active features file for later steps (scaling/windowing)
-ACTIVE_LINK = FEAT_DIR / cfg["features"]["output"]["features_file"]
-try:
-    if ACTIVE_LINK.exists() or ACTIVE_LINK.is_symlink():
-        ACTIVE_LINK.unlink()
-    ACTIVE_LINK.symlink_to(OUT_FILE.name)  # relative symlink
-    print("[impute] activated features via symlink →", ACTIVE_LINK, "→", OUT_FILE.name)
-except Exception as e:
-    print(f"[impute] symlink failed ({e}); falling back to overwrite of {ACTIVE_LINK}")
-    pq.write_table(pa.Table.from_pandas(df, preserve_index=False), ACTIVE_LINK)
-    print("[impute] activated features by writing:", ACTIVE_LINK)
+    # per-station, past-only imputation
+    def _impute_group(g: pd.DataFrame) -> pd.DataFrame:
+        g = g.sort_values(time_col).copy()
+        # 1) short gaps
+        g[num_cols] = g[num_cols].ffill(limit=ffill_lim)
+        # 2) past rolling mean (shifted)
+        past_mean = g[num_cols].rolling(window=roll_win, min_periods=1).mean().shift(1)
+        g[num_cols] = g[num_cols].combine_first(past_mean)
+        # 3) expanding median fallback (shifted)
+        if use_median:
+            past_med = g[num_cols].expanding(min_periods=1).median().shift(1)
+            g[num_cols] = g[num_cols].combine_first(past_med)
+        return g
+
+    try:
+        df = df.groupby(id_col, group_keys=False, sort=False).apply(_impute_group, include_groups=False)
+    except TypeError:
+        df = df.groupby(id_col, group_keys=False, sort=False).apply(_impute_group)
+
+    _write_df(df, out_path, io_fmt)
+    print("[impute] wrote:", out_path)
+
+    # activation strictly per YAML (with safe fallback)
+    if activate:
+        active_file = feat_dir / in_name
+        try:
+            if active_file.exists() or active_file.is_symlink():
+                active_file.unlink()
+            if activate_mode.lower() == "symlink" and active_file.name != out_path.name:
+                rel = Path(os.path.relpath(out_path, start=feat_dir))
+                active_file.symlink_to(rel)
+                print("[impute] activated via symlink →", active_file, "→", rel)
+            elif activate_mode.lower() == "overwrite" or active_file.name == out_path.name:
+                _write_df(df, active_file, io_fmt)
+                print("[impute] activated by overwrite:", active_file)
+            else:
+                raise ValueError("features.output.activate_mode must be 'symlink' or 'overwrite'")
+        except Exception as e:
+            print(f"[impute] activation failed ({e}); falling back to overwrite.")
+            _write_df(df, active_file, io_fmt)
+            print("[impute] activated by overwrite:", active_file)
+
+if __name__ == "__main__":
+    main()

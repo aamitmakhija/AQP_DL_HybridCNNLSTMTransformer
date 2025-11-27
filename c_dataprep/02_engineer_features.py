@@ -1,233 +1,269 @@
+#!/usr/bin/env python3
+# c_dataprep/02_engineer_features.py
 from __future__ import annotations
-from pathlib import Path
-import json
-from typing import Dict, List
 
-import pandas as pd
+import json
+from pathlib import Path
+from typing import Dict, List, Iterable, Optional
+
 import numpy as np
+import pandas as pd
 import pyarrow.dataset as ds
 
+# Ensure repo root on sys.path so "common" is importable when run as a script
+import sys
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 from common.config_loader import load_cfg
 
 
-# ---------- helpers ----------
-def _ensure_dir(p: Path):
+# ---------------- helpers ----------------
+
+def _req(d: dict, path: List[str], name: str | None = None):
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur or cur[k] is None:
+            dotted = ".".join(path)
+            raise KeyError(f"configs: missing {dotted}{' ('+name+')' if name else ''}")
+        cur = cur[k]
+    return cur
+
+def _under(root: Path, rel_or_abs: str) -> Path:
+    p = Path(rel_or_abs)
+    return p if p.is_absolute() else (root / p)
+
+def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
-def _read_parquet(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
+def _read_df(path: Path, fmt: str) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    f = (fmt or "").lower()
+    if f == "parquet": return pd.read_parquet(path)
+    if f == "feather": return pd.read_feather(path)
+    if f == "csv":     return pd.read_csv(path)
+    raise SystemExit(f"Unsupported input format: {fmt!r}")
 
-def _pick_pm25_col(cols: List[str], aliases: List[str]) -> str | None:
-    lower = {c.lower(): c for c in cols}
-    for a in aliases:
-        if a.lower() in lower:
-            return lower[a.lower()]
-    return None
-
-def _write_df(df: pd.DataFrame, out_fmt: str, path: Path):
+def _write_df(df: pd.DataFrame, path: Path, fmt: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if out_fmt == "parquet":
-        df.to_parquet(path, index=False)
-    elif out_fmt == "feather":
-        df.reset_index(drop=True).to_feather(path)
-    elif out_fmt == "csv":
-        df.to_csv(path, index=False)
-    else:
-        raise SystemExit(f"Unsupported features.output.format: {out_fmt}")
+    f = (fmt or "").lower()
+    if f == "parquet": df.to_parquet(path, index=False)
+    elif f == "feather": df.reset_index(drop=True).to_feather(path)
+    elif f == "csv": df.to_csv(path, index=False)
+    else: raise SystemExit(f"Unsupported features.output.format: {fmt!r}")
+
+def _norm_sid(s: str) -> str:
+    return str(s).strip().removesuffix(".0")
+
+def _pick(cols: Iterable[str], cand: Iterable[str]) -> Optional[str]:
+    s = {c.lower(): c for c in cols}
+    for a in cand:
+        if a.lower() in s:
+            return s[a.lower()]
+    return None
 
 def _add_time_features(df: pd.DataFrame, time_col: str, enable: bool) -> pd.DataFrame:
     if not enable or time_col not in df.columns or df.empty:
         return df
     out = df.copy()
-    # hour/day
-    hr = out[time_col].dt.hour
-    dow = out[time_col].dt.dayofweek
-    # cyclical encodings
-    out["hour_sin"] = np.sin(2 * np.pi * hr / 24.0)
-    out["hour_cos"] = np.cos(2 * np.pi * hr / 24.0)
-    out["dow_sin"]  = np.sin(2 * np.pi * dow / 7.0)
-    out["dow_cos"]  = np.cos(2 * np.pi * dow / 7.0)
+    t = pd.to_datetime(out[time_col], errors="coerce")
+    hour = t.dt.hour
+    dow  = t.dt.dayofweek
+    out["hour_sin"] = np.sin(2 * np.pi * hour / 24.0)
+    out["hour_cos"] = np.cos(2 * np.pi * hour / 24.0)
+    out["dow_sin"]  = np.sin(2 * np.pi * dow  / 7.0)
+    out["dow_cos"]  = np.cos(2 * np.pi * dow  / 7.0)
     return out
 
 
-# ---------- feature builder ----------
-def _feature_block(
-    df: pd.DataFrame,
-    cfg: Dict,
-    horizons: List[int],
-    roll_windows: List[int],
-    add_time_feats: bool,
-) -> pd.DataFrame:
-    time_col = cfg["data"]["time_col"]
-    id_col   = cfg["data"].get("id_col", "station_id")
+# ---------------- feature builders ----------------
 
-    base_feats: List[str]   = cfg["data"].get("features", [])
-    pm25_aliases: List[str] = cfg["data"]["headers"]["airquality"]["pm25"]
-    pm25_col = _pick_pm25_col(df.columns.tolist(), pm25_aliases)
+def _create_target_lags(df: pd.DataFrame, id_col: str, y_col: str, lags: List[int]) -> pd.DataFrame:
+    if not lags or y_col not in df.columns:
+        return df
+    out = df.copy()
+    g = out.groupby(id_col, sort=False)[y_col]
+    for h in sorted({int(x) for x in lags}):
+        out[f"{y_col}_lag{h}h"] = g.shift(h)
+    return out
 
-    # subset to id, time, pm25 (if available), and configured features that exist
-    take = [c for c in base_feats if c in df.columns]
-    base_cols = [id_col, time_col] + ([pm25_col] if pm25_col else []) + take
-    base_cols = [c for c in base_cols if c in df.columns]
-
-    if id_col not in df.columns:
-        raise KeyError(f"{id_col} missing in base_df. Columns: {df.columns.tolist()}")
-
-    df = df[base_cols].copy()
-    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
-    df = df.sort_values([id_col, time_col])
-
-    # informative note if PM2.5 not found
-    if pm25_col is None and horizons:
-        print("[warn] PM2.5 column not found by aliases; skipping lag features")
-
-    groups = []
-    for sid, g in df.groupby(id_col, sort=False):
-        g = g.sort_values(time_col).reset_index(drop=True)
-        base = pd.DataFrame({id_col: sid, time_col: g[time_col]})
-
-        frames = [base]
-
-        # lags for PM2.5 only (if present)
-        if pm25_col and pm25_col in g.columns and horizons:
-            lag_block = pd.concat(
-                {f"{pm25_col}_lag{h}h": g[pm25_col].shift(h) for h in horizons},
-                axis=1,
-            )
-            lag_block.columns = lag_block.columns.get_level_values(0)
-            frames.append(lag_block)
-
-        # rolling stats for numeric base features only (past-only window including current)
-        num_cols = g[[c for c in take if c in g.columns]].select_dtypes(include="number").columns.tolist()
-        if num_cols and roll_windows:
-            frames.append(g[num_cols])
-            for w in roll_windows:
-                roll = g[num_cols].rolling(window=int(w), min_periods=max(1, int(w)//2))
-                frames.append(roll.mean().add_suffix(f"_roll{w}h_mean"))
-                frames.append(roll.std().add_suffix(f"_roll{w}h_std"))
-
-        merged = pd.concat(frames, axis=1)
-
-        # optional time features (same timestamp alignment)
-        if add_time_feats:
-            merged = _add_time_features(merged, time_col, enable=True)
-
-        groups.append(merged)
-
-    out = pd.concat(groups, ignore_index=True)
-
-    # ensure unique columns (in case of accidental dupes)
-    out.columns = [
-        "_".join(map(str, c)) if isinstance(c, tuple) else str(c)
-        for c in out.columns
-    ]
-    out = out.loc[:, ~out.columns.duplicated()].copy()
-
+def _create_rolling(df: pd.DataFrame, id_col: str, cols: List[str], windows: List[int]) -> pd.DataFrame:
+    if not cols or not windows:
+        return df
+    take = [c for c in cols if c in df.columns]
+    if not take:
+        return df
+    out = df.copy()
+    g = out.groupby(id_col, sort=False)
+    for c in take:
+        if not pd.api.types.is_numeric_dtype(out[c]):
+            continue
+        s = g[c]
+        for w in sorted({int(x) for x in windows}):
+            r = s.shift(1).rolling(window=w, min_periods=1)
+            out[f"{c}_roll{w}h_mean"] = r.mean().reset_index(level=0, drop=True)
+            out[f"{c}_roll{w}h_std"]  = r.std(ddof=0).reset_index(level=0, drop=True)
     return out
 
 
-# ---------- main ----------
+# ---------------- main ----------------
+
 def engineer():
-    cfg = load_cfg()
+    cfg: Dict = load_cfg()
 
-    art_dir  = Path(cfg["paths"]["artifacts_dir"])
-    ds_dir   = art_dir / cfg["paths"].get("dataset_stream_dir", "dataset_stream")
-    splits   = art_dir / cfg["paths"].get("splits_dir", "splits")
-    feats_dirname = cfg["paths"].get("features_dir", "features")
-    out_dir  = art_dir / feats_dirname
-    _ensure_dir(out_dir)
+    # Required paths (strict)
+    art_rel    = _req(cfg, ["paths", "artifacts_dir"], "paths.artifacts_dir")
+    feats_rel  = _req(cfg, ["paths", "features_dir"], "paths.features_dir")
+    splits_rel = _req(cfg, ["paths", "splits_dir"], "paths.splits_dir")
+    ds_rel     = _req(cfg, ["paths", "dataset_stream_dir"], "paths.dataset_stream_dir")
 
-    time_col = cfg["data"]["time_col"]
-    id_col   = cfg["data"].get("id_col", "station_id")
+    # Resolve roots
+    cwd       = Path(".")
+    art_dir   = _under(cwd, art_rel)
+    feats_dir = _under(art_dir, feats_rel)
+    splits    = _under(art_dir, splits_rel)
+    ds_dir    = _under(art_dir, ds_rel)
+    _ensure_dir(feats_dir)
 
-    horizons: List[int] = list(cfg.get("lags", {}).get("hours", [1, 3, 6, 12, 24]))
-    roll_default = int(cfg.get("missing", {}).get("rolling_mean_hours", 24))
-    roll_windows: List[int] = list(cfg.get("features", {}).get("rolling_windows", [6, 12, roll_default, 48, 72]))
+    # Schema keys (strict)
+    id_col   = _req(cfg, ["data", "id_col"], "data.id_col")
+    time_col = _req(cfg, ["data", "time_col"], "data.time_col")
+    y_col    = _req(cfg, ["data", "target"], "data.target")
 
-    # optional time features
-    time_cfg = (cfg.get("features", {}).get("time_features", {}) or {})
-    add_time_feats = bool(time_cfg.get("cyclical", True))
+    # PM2.5 aliases (tolerant fallback to target)
+    H_aq = ((cfg.get("data") or {}).get("headers") or {}).get("airquality", {}) or {}
+    pm25_aliases = list(H_aq.get("pm25", [])) or [y_col]
 
-    out_cfg = cfg.get("features", {}).get("output", {})
-    out_fmt      = out_cfg.get("format", "parquet")
-    out_features = out_cfg.get("features_file", "dataset_features.parquet")
-    out_manifest = out_cfg.get("manifest_file", "features_manifest.json")
+    # Feature config (strict containers; content can be empty lists)
+    data_feats   = list((_req(cfg, ["data", "features"], "data.features")) or [])
+    lags_hours   = list((cfg.get("lags", {}) or {}).get("hours", []) or [])
+    roll_windows = list((cfg.get("features", {}) or {}).get("rolling_windows", []) or [])
+    time_feat_cfg  = (cfg.get("features", {}).get("time_features", {}) or {})
+    use_time_feats = bool(time_feat_cfg.get("cyclical", True))
 
-    # load splits if present; else fall back to whole stream
-    train = _read_parquet(splits / cfg.get("output", {}).get("split_filenames", {}).get("train", "train.parquet"))
-    val   = _read_parquet(splits / cfg.get("output", {}).get("split_filenames", {}).get("val",   "val.parquet"))
-    test  = _read_parquet(splits / cfg.get("output", {}).get("split_filenames", {}).get("test",  "test.parquet"))
+    # IO config (strict)
+    out_cfg       = _req(cfg, ["features", "output"], "features.output")
+    io_format     = _req(out_cfg, ["format"], "features.output.format")      # parquet|feather|csv
+    out_features  = _req(out_cfg, ["features_file"], "features.output.features_file")
+    out_manifest  = _req(out_cfg, ["manifest_file"], "features.output.manifest_file")
+
+    # Split IO (strict)
+    split_out_cfg = _req(cfg, ["output"], "output")
+    split_fmt     = _req(split_out_cfg, ["format"], "output.format")
+    split_names   = split_out_cfg.get("split_filenames", {}) or {}
+    fn_train      = split_names.get("train", f"train.{split_fmt}")
+    fn_val        = split_names.get("val",   f"val.{split_fmt}")
+    fn_test       = split_names.get("test",  f"test.{split_fmt}")
+
+    # Load splits or fallback to dataset_stream
+    train = _read_df(_under(splits, fn_train), split_fmt)
+    val   = _read_df(_under(splits, fn_val),   split_fmt)
+    test  = _read_df(_under(splits, fn_test),  split_fmt)
 
     if train.empty and not ds_dir.exists():
-        raise FileNotFoundError("No splits and no dataset_stream found. Run ingestion first.")
+        raise FileNotFoundError("No splits found and dataset_stream dir is missing. Run ingestion first.")
 
-    if train.empty:
-        base_df = ds.dataset(str(ds_dir), format="parquet").to_table().to_pandas()
-    else:
-        base_df = pd.concat([train, val, test], ignore_index=True)
+    base_df = (ds.dataset(str(ds_dir), format="parquet").to_table().to_pandas()
+               if train.empty else pd.concat([train, val, test], ignore_index=True))
 
-    # optional station keep-list
-    keep_txt = art_dir / "stations_keep.txt"
-    if keep_txt.exists() and id_col in base_df.columns:
-        keep_ids = {s.strip() for s in keep_txt.read_text().splitlines() if s.strip()}
-        before = len(base_df)
-        base_df = base_df[base_df[id_col].astype(str).isin(keep_ids)].copy()
-        print(f"[filter] stations_keep.txt applied: rows {before:,} -> {len(base_df):,}")
+    # Optional station keep-list
+    keep_txt_name = (cfg.get("reports", {}) or {}).get("stations_keep_txt")
+    if keep_txt_name and id_col in base_df.columns:
+        keep_txt = _under(art_dir, keep_txt_name)
+        if keep_txt.exists():
+            keep_ids = {
+                _norm_sid(s)
+                for s in keep_txt.read_text().splitlines()
+                if s.strip() and not s.strip().startswith("#")
+            }
+            before = len(base_df)
+            base_df = base_df[base_df[id_col].astype(str).map(_norm_sid).isin(keep_ids)].copy()
+            print(f"[filter] keep-list applied: rows {before:,} -> {len(base_df):,}")
 
-    # time normalization + drop_years
+    # Time normalization + optional drop_years
     base_df[time_col] = pd.to_datetime(base_df[time_col], errors="coerce")
-    drop_years = set(cfg.get("split", {}).get("drop_years", []))
+    drop_years = set((cfg.get("split", {}) or {}).get("drop_years", []) or [])
     if drop_years:
         before = len(base_df)
         base_df = base_df[~base_df[time_col].dt.year.isin(drop_years)].copy()
         print(f"[filter] drop_years={sorted(drop_years)}: rows {before:,} -> {len(base_df):,}")
 
+    # Canonical order
     base_df = base_df.sort_values([id_col, time_col]).reset_index(drop=True)
-    feats = _feature_block(
-        base_df, cfg,
-        horizons=horizons,
-        roll_windows=roll_windows,
-        add_time_feats=add_time_feats,
-    )
 
-    # drop configured high-missing features
+    # Build features
+    df = base_df
+
+    # 1) target lags (if requested) – resolve actual target col by alias if needed
+    if lags_hours:
+        y_eff = y_col if y_col in df.columns else _pick(df.columns, pm25_aliases)
+        if y_eff:
+            df = _create_target_lags(df, id_col=id_col, y_col=y_eff, lags=lags_hours)
+        else:
+            print(f"[warn] target '{y_col}' not found and no alias matched; skipping lags")
+
+    # 2) rolling stats for configured base numeric features (excluding the target to avoid leakage duplication)
+    roll_cols = [c for c in data_feats if c in df.columns and c != y_col]
+    df = _create_rolling(df, id_col=id_col, cols=roll_cols, windows=roll_windows)
+
+    # 3) cyclical time features
+    df = _add_time_features(df, time_col=time_col, enable=use_time_feats)
+
+    # Drop configured high-missing features if any
     drop_cfg_raw = (cfg.get("missing") or {}).get("drop_features", None)
-    drop_list: List[str] = []
-    if isinstance(drop_cfg_raw, (list, tuple, set)): drop_list = [str(c) for c in drop_cfg_raw]
-    elif isinstance(drop_cfg_raw, str):              drop_list = [drop_cfg_raw]
-
-    if drop_list:
-        existing = [c for c in drop_list if c in feats.columns]
+    if drop_cfg_raw:
+        drop_list = [str(c) for c in (drop_cfg_raw if isinstance(drop_cfg_raw, (list, tuple, set)) else [drop_cfg_raw])]
+        existing = [c for c in drop_list if c in df.columns]
         if existing:
             print(f"[features] dropping columns from config missing.drop_features: {existing}")
-            feats = feats.drop(columns=existing)
+            df = df.drop(columns=existing)
 
-    # persist
-    _write_df(feats, out_fmt, out_dir / out_features)
+    # Persist engineered features
+    feats_path    = _under(feats_dir, out_features)
+    manifest_path = _under(feats_dir, out_manifest)
+    _write_df(df, feats_path, io_format)
+    print(f"[OK] wrote features → {feats_path}")
 
+    # Manifest
+    exclude_cols = {id_col, time_col, y_col}
+    X_cols = [c for c in df.columns if c not in exclude_cols and pd.api.types.is_numeric_dtype(df[c])]
     manifest = {
-        "rows": int(len(feats)),
-        "stations": int(feats[id_col].nunique()) if id_col in feats else 0,
-        "cols": feats.columns.tolist(),
-        "horizons": horizons,
-        "roll_windows": roll_windows,
-        "time_min": str(feats[time_col].min()) if len(feats) else None,
-        "time_max": str(feats[time_col].max()) if len(feats) else None,
-        "dropped_from_config": drop_list,
-        "time_features": {"cyclical": bool(add_time_feats)},
+        "rows": int(len(df)),
+        "stations": int(df[id_col].nunique()) if id_col in df else 0,
+        "time_min": str(df[time_col].min()) if len(df) else None,
+        "time_max": str(df[time_col].max()) if len(df) else None,
+        "time_col": time_col,
+        "target_col": y_col,
+        "id_cols": [id_col],
+        "X_cols_ordered": X_cols,
+        "lags_hours": lags_hours,
+        "rolling_windows": roll_windows,
+        "time_features": {"cyclical": bool(use_time_feats)},
+        "dropped_from_config": [c for c in (drop_cfg_raw or [])] if isinstance(drop_cfg_raw, (list, tuple, set)) else ([drop_cfg_raw] if drop_cfg_raw else []),
+        "source": {
+            "splits_used": {
+                "train": str(_under(splits, fn_train)),
+                "val":   str(_under(splits, fn_val)),
+                "test":  str(_under(splits, fn_test)),
+                "format": split_fmt,
+                "fallback_dataset_stream": (train.empty),
+                "dataset_stream_dir": str(ds_dir),
+            }
+        },
+        "output_format": io_format,
+        "output_file": str(feats_path),
     }
-    (out_dir / out_manifest).write_text(json.dumps(manifest, indent=2))
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    print(f"[OK] wrote manifest → {manifest_path}")
 
+    # Quick ranges from splits (if present)
     print("\n=== SPLIT DATE RANGES (from features inputs) ===")
-    for split_name, df in [("train", train), ("val", val), ("test", test)]:
-        if df.empty:
-            print(f"[{split_name}] missing or empty")
+    for name, d in [("train", train), ("val", val), ("test", test)]:
+        if d.empty:
+            print(f"[{name}] missing or empty")
         else:
-            df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
-            print(f"[{split_name}] rows={len(df):7d} start={df[time_col].min()} end={df[time_col].max()}")
-
-    print(f"[OK] wrote features → {out_dir/out_features}")
-    print(f"[OK] wrote manifest → {out_dir/out_manifest}")
+            d = d.copy()
+            d[time_col] = pd.to_datetime(d[time_col], errors="coerce")
+            print(f"[{name}] rows={len(d):7d} start={d[time_col].min()} end={d[time_col].max()}")
 
 
 if __name__ == "__main__":

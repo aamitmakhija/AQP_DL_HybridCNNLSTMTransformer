@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
-# a_scripts/05_eval_report.sh — run eval report with the same CONFIG logic as train
+# Run eval report (portable: no readarray/jq)
 # Usage:
 #   ./a_scripts/05_eval_report.sh
-#   CONFIG="configs/default.yaml,configs/keep.yaml" ./a_scripts/05_eval_report.sh
-
+#   CONFIG="configs/default.yaml,configs/cpu.yaml" ./a_scripts/05_eval_report.sh
 set -euo pipefail
 trap 'echo "[eval_report] FAILED on line $LINENO" >&2' ERR
 
-# ---------- locate repo root & cd ----------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-cd "${ROOT_DIR}"
-
-# ---------- pick python (prefer python3 on mac/linux) ----------
-if [[ -n "${VIRTUAL_ENV-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+# -------- pick python (prefer venv) --------
+if [ -n "${VIRTUAL_ENV-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
   PY="${VIRTUAL_ENV}/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3)"
@@ -24,86 +18,73 @@ else
   exit 1
 fi
 
-# ---------- quick dependency sanity ----------
-if ! "${PY}" -c 'import yaml' 2>/dev/null; then
-  echo "ERROR: PyYAML not installed in ${PY}. Try: pip install pyyaml" >&2
-  exit 1
-fi
-
-# ---------- config ----------
+# -------- config --------
 export CONFIG="${CONFIG:-configs/default.yaml}"
-
 echo "[eval_report] Using CONFIG=${CONFIG}"
 echo "[eval_report] CWD=$(pwd)"
 echo "[eval_report] Python: $("$PY" -V) at ${PY}"
 
-# ---------- resolve key paths from YAML (same approach as other scripts) ----------
+# -------- resolve paths via Python --------
 ART_DIR="$("$PY" - <<'PY'
 import os, yaml
-cfgs=[s.strip() for s in os.environ.get("CONFIG","configs/default.yaml").split(",") if s.strip()]
 merged={}
-for p in cfgs:
+for p in [s.strip() for s in os.environ.get("CONFIG","configs/default.yaml").split(",") if s.strip()]:
     with open(p,"r") as f:
         y=yaml.safe_load(f) or {}
-    for k,v in y.get("paths",{}).items():
-        merged.setdefault("paths",{})[k]=v
+    if "paths" in y:
+        merged.setdefault("paths",{}).update(y["paths"])
 print(merged.get("paths",{}).get("artifacts_dir","experiments/artifacts"))
 PY
 )"
 
 MODEL_DIR_REL="$("$PY" - <<'PY'
 import os, yaml
-cfgs=[s.strip() for s in os.environ.get("CONFIG","configs/default.yaml").split(",") if s.strip()]
 merged={}
-for p in cfgs:
+for p in [s.strip() for s in os.environ.get("CONFIG","configs/default.yaml").split(",") if s.strip()]:
     with open(p,"r") as f:
         y=yaml.safe_load(f) or {}
-    for k,v in y.get("dl",{}).items():
-        merged.setdefault("dl",{})[k]=v
+    if "dl" in y:
+        merged.setdefault("dl",{}).update(y["dl"])
 print(merged.get("dl",{}).get("model_dir","models"))
 PY
 )"
 
 FEATS_DIR_REL="$("$PY" - <<'PY'
 import os, yaml
-cfgs=[s.strip() for s in os.environ.get("CONFIG","configs/default.yaml").split(",") if s.strip()]
 merged={}
-for p in cfgs:
+for p in [s.strip() for s in os.environ.get("CONFIG","configs/default.yaml").split(",") if s.strip()]:
     with open(p,"r") as f:
         y=yaml.safe_load(f) or {}
-    for k,v in y.get("paths",{}).items():
-        merged.setdefault("paths",{})[k]=v
+    if "paths" in y:
+        merged.setdefault("paths",{}).update(y["paths"])
 print(merged.get("paths",{}).get("features_scaled_dir","features_scaled"))
 PY
 )"
 
-# Make model/features dirs absolute if needed
-MODEL_DIR="${MODEL_DIR_REL}"
-[[ "${MODEL_DIR}" = /* ]] || MODEL_DIR="${ART_DIR}/${MODEL_DIR_REL}"
-FEATS_DIR="${FEATS_DIR_REL}"
-[[ "${FEATS_DIR}" = /* ]] || FEATS_DIR="${ART_DIR}/${FEATS_DIR_REL}"
+# absolutize dirs
+MODEL_DIR="${MODEL_DIR_REL}"; case "${MODEL_DIR}" in /*) ;; *) MODEL_DIR="${ART_DIR}/${MODEL_DIR_REL}";; esac
+FEATS_DIR="${FEATS_DIR_REL}"; case "${FEATS_DIR}" in /*) ;; *) FEATS_DIR="${ART_DIR}/${FEATS_DIR_REL}";; esac
 
 echo "[eval_report] artifacts_dir=${ART_DIR}"
 echo "[eval_report] model_dir=${MODEL_DIR}"
 echo "[eval_report] features_scaled_dir=${FEATS_DIR}"
 
-# ---------- preflight ----------
-if [[ ! -d "${MODEL_DIR}" ]]; then
+# -------- preflight --------
+if [ ! -d "${MODEL_DIR}" ]; then
   echo "WARNING: ${MODEL_DIR} does not exist; eval will proceed but may find no checkpoints."
 fi
-if [[ ! -f "${FEATS_DIR}/test.parquet" ]]; then
-  echo "ERROR: ${FEATS_DIR}/test.parquet not found. Run modelprep/dataprep first." >&2
+# accept parquet/feather/csv depending on your config; check the most common
+if [ ! -f "${FEATS_DIR}/test.parquet" ] && [ ! -f "${FEATS_DIR}/test.feather" ] && [ ! -f "${FEATS_DIR}/test.csv" ]; then
+  echo "ERROR: scaled test split missing in ${FEATS_DIR} (parquet/feather/csv). Run dataprep first." >&2
   exit 1
 fi
 
-# ---------- run ----------
+# -------- run --------
 echo "[eval_report] Launching: ${PY} -m e_training.eval_report"
 CONFIG="${CONFIG}" "${PY}" -m e_training.eval_report
 
-
-# ---------- optional post-eval: inspect one station’s top errors ----------
-# Usage: STATION_ID=1001 ./a_scripts/05_eval_report.sh
-if [[ -n "${STATION_ID:-}" ]]; then
+# -------- optional post-inspect (top errors for a station) --------
+if [ -n "${STATION_ID-}" ]; then
   echo "[post] Inspecting station_id=${STATION_ID}"
   CONFIG="${CONFIG}" "${PY}" - <<'PY'
 import os, pandas as pd, sys
@@ -114,20 +95,15 @@ try:
 except FileNotFoundError:
     print(f"[post] {p} not found (set eval.save_preds: true in CONFIG).")
     sys.exit(0)
-
 if "station_id" in df.columns:
-    sub = (df[df["station_id"] == sid]
-           .assign(abs_err=lambda x: (x.y_pred - x.y_true).abs()))
-    out = f"experiments/artifacts/reports/residuals_{sid}_H1_top10.csv"
-    (sub.sort_values("abs_err", ascending=False)
-        .head(10)
-        .to_csv(out, index=False))
+    sub = df[df["station_id"].astype(str) == str(sid)].assign(abs_err=lambda x: (x.y_pred - x.y_true).abs())
+    out = "experiments/artifacts/reports/residuals_{}_H1_top10.csv".format(sid)
+    sub.sort_values("abs_err", ascending=False).head(10).to_csv(out, index=False)
     print(f"[post] Wrote {out}")
 else:
     print("[post] preds_H1.csv has no station_id column.")
 PY
 fi
-
 
 echo
 echo "******************************** eval report done ********************************"

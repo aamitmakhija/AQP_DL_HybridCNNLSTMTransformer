@@ -1,0 +1,36 @@
+# configs/overlays/beat17_cpu_mse.yaml
+# Same as beat17_cpu_push, but train directly for RMSE (MSE loss)
+
+dl:
+  loss: mse        # align training loss with eval metric
+  huber_delta: 4.0 # kept for compatibility, but unused when loss=mse
+
+  lr: 1.5e-4       # keep the good LR from the last run
+  weight_decay: 1.0e-4
+  epochs: 320
+  patience: 20
+
+  lr_scheduler:
+    name: reduce_on_plateau
+    factor: 0.5
+    patience: 5
+    min_lr: 5.0e-6
+
+sequence:
+  lookback: 96
+  stride: 2
+  horizon: [1]
+
+model:
+  hybrid:
+    cnn_channels: [64, 64, 64]
+    cnn_dropout: 0.12
+    d_model: 192
+    nhead: 4
+    num_layers: 3
+    attn_dropout: 0.04
+    ffn_dropout: 0.12
+    use_station_embedding: false
+    lstm_hidden: 160
+    lstm_layers: 1
+    lstm_dropout: 0.10

@@ -1,0 +1,63 @@
+ONE
+
+******** 04_train_hybrid ********
+[train_hybrid] Using CONFIG=configs/cpu.yaml,configs/overlays/beat17_cpu_push.yaml
+[train_hybrid] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[train_hybrid] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/.venv/bin/python
+[train_hybrid] artifacts_dir=experiments/artifacts
+[train_hybrid] seq_dir=experiments/artifacts/seq
+[train_hybrid] Launching: /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/.venv/bin/python -m e_training.train_hybrid
+/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/.venv/lib/python3.13/site-packages/torch/__init__.py:1617: UserWarning: Please use the new API settings to control TF32 behavior, such as torch.backends.cudnn.conv.fp32_precision = 'tf32' or torch.backends.cuda.matmul.fp32_precision = 'ieee'. Old settings, e.g, torch.backends.cuda.matmul.allow_tf32 = True, torch.backends.cudnn.allow_tf32 = True, allowTF32CuDNN() and allowTF32CuBLAS() will be deprecated after Pytorch 2.9. Please see https://pytorch.org/docs/main/notes/cuda.html#tensorfloat-32-tf32-on-ampere-and-later-devices (Triggered internally at /Users/runner/work/pytorch/pytorch/pytorch/aten/src/ATen/Context.cpp:85.)
+  _C._set_float32_matmul_precision(precision)
+[DL] device=mps bs=64 workers=2 pin_memory=False prefetch=2 grad_accum_steps=1
+[DL] AMP: enabled=False dtype=torch.float16 device=mps
+[LR] ReduceLROnPlateau factor=0.5 patience=5 min_lr=5e-06
+[Model] impl=hybrid_cnn_transformer
+=== HYBRID MODEL SUMMARY ===
+Input features: 15
+CNN: 3 layer(s)
+LSTM: enabled
+Transformer layers: 3
+Positional Encoding: enabled
+Pooling: gap
+Station embedding: enabled
+Horizons: [1]
+=====================================
+[H=1] ep 001  train=0.096066  val=0.165224
+[H=1] ep 002  train=0.062346  val=0.164801
+[H=1] ep 003  train=0.059762  val=0.160413
+[H=1] ep 004  train=0.058315  val=0.160958
+[H=1] ep 005  train=0.057096  val=0.160870
+[H=1] ep 006  train=0.056327  val=0.159880
+[H=1] ep 007  train=0.056079  val=0.159910
+[H=1] ep 008  train=0.055543  val=0.158871
+[H=1] ep 009  train=0.054933  val=0.160823
+[H=1] ep 010  train=0.054973  val=0.161250
+[H=1] ep 011  train=0.054511  val=0.159747
+[H=1] ep 012  train=0.054593  val=0.162081
+[H=1] ep 013  train=0.054218  val=0.158836
+[H=1] ep 014  train=0.053616  val=0.157725
+[H=1] ep 015  train=0.053536  val=0.157757
+[H=1] ep 016  train=0.053331  val=0.156982
+[H=1] ep 017  train=0.053262  val=0.158730
+^CTraceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/e_training/train_hybrid.py", line 436, in <module>
+    main()
+    ~~~~^^
+  File "/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/e_training/train_hybrid.py", line 378, in main
+    tr_loss = train_one_epoch_amp(
+        model, train_loader, dev, optimizer, criterion,
+        grad_clip, amp_enabled, amp_device, amp_dtype,
+        grad_accum_steps=grad_accum_steps, head_key=head_key
+    )
+  File "/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/e_training/train_hybrid.py", line 229, in train_one_epoch_amp
+    bs = y.size(0); total += float(loss.item()) * bs; n += bs
+                                   ~~~~~~~~~^^
+KeyboardInterrupt
+
+(.venv) amitmakhija@MacBook-Pro repo % 
+ *  History restored 
+
+amitmakhija@MacBook-Pro repo % 

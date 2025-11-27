@@ -1,0 +1,35 @@
+[run_all] CONFIG=configs/cpu.yaml,configs/overlays/beat17_cpu_push.yaml
+
+******** 00_clean ********
+****************************************
+[00_clean] repo=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[00_clean] artifacts=experiments/artifacts
+****************************************
+[00_clean] Removing:
+ - removed:     experiments/artifacts/seq
+ - removed:     experiments/artifacts/features_scaled_ps
+ - not found:    experiments/artifacts/features_scaled
+ - removed:     experiments/artifacts/models
+ - removed:     experiments/artifacts/models_mps
+ - removed:     experiments/artifacts/reports
+ - not found:    experiments/artifacts/checkpoints
+ - not found:    experiments/artifacts/duplicates_summary.json
+ - not found:    experiments/artifacts/split_summary.json
+ - created:      experiments/artifacts/models
+ - created:      experiments/artifacts/models_mps
+ - created:      experiments/artifacts/reports
+****************************************
+[00_clean] Fresh dirs → experiments/artifacts/models, experiments/artifacts/models_mps, experiments/artifacts/reports
+[00_clean] Done.
+****************************************
+
+******** 01_make_data ********
+[01_make_data.sh] Using CONFIG=configs/cpu.yaml,configs/overlays/beat17_cpu_push.yaml
+[01_make_data.sh] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[01_make_data.sh] Python: Python 3.13.7 at /opt/homebrew/bin/python3
+[1/3] b_ingestion/01_csv2parquet_safe.py
+Traceback (most recent call last):
+  File "/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/b_ingestion/01_csv2parquet_safe.py", line 8, in <module>
+    import yaml
+ModuleNotFoundError: No module named 'yaml'
+[run_all] ERROR on line 40. Exiting.

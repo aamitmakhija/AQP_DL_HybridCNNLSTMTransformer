@@ -1,62 +1,104 @@
 # e_training/engine.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Iterable, List
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-
 # --------------------------- utils ---------------------------
+
+def _unpack(batch):
+    return (batch[0], batch[1]) if not (isinstance(batch, (list, tuple)) and len(batch) == 3) else (batch[0], batch[1])
 
 def _sanitize_batch(
     Xb: torch.Tensor,
     yb: torch.Tensor,
-    clamp: float = 10.0,
+    clamp: Optional[float] = 10.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, bool]:
-    """
-    Replace NaN/±Inf with finite values and clamp magnitudes.
-    Returns (Xb_sanitized, yb_sanitized, ok_flag).
-    """
-    # Fast path: if already finite, just (optionally) clamp
-    if torch.isfinite(Xb).all() and torch.isfinite(yb).all():
-        if clamp and clamp > 0:
-            Xb = torch.clamp(Xb, -clamp, clamp)
-        return Xb, yb, True
-
-    # Replace non-finites
-    Xb = torch.nan_to_num(Xb)  # NaN->0, +Inf->max, -Inf->min
-    yb = torch.nan_to_num(yb)
-
-    # Clamp extremes to a reasonable range
+    if not torch.isfinite(Xb).all() or not torch.isfinite(yb).all():
+        Xb = torch.nan_to_num(Xb)
+        yb = torch.nan_to_num(yb)
     if clamp and clamp > 0:
         Xb = torch.clamp(Xb, -clamp, clamp)
         yb = torch.clamp(yb, -clamp, clamp)
-
     ok = bool(torch.isfinite(Xb).all() and torch.isfinite(yb).all())
     return Xb, yb, ok
 
+def _as_1d(y: torch.Tensor) -> torch.Tensor:
+    if y.ndim == 2 and y.shape[1] == 1:
+        return y.view(-1)
+    if y.ndim == 1:
+        return y
+    return y  # possibly [B,H]
+
+def _align_outputs_and_targets(
+    model_out: torch.Tensor | Dict[int, torch.Tensor],
+    yb: torch.Tensor,
+    horizons: Optional[Iterable[int]] = None,
+) -> Tuple[Dict[int, torch.Tensor], Dict[int, torch.Tensor]]:
+    yb = _as_1d(yb)
+    target_map: Dict[int, torch.Tensor] = {}
+    if yb.ndim == 1:
+        target_map[1] = yb
+    elif yb.ndim == 2:
+        for i in range(yb.shape[1]):
+            target_map[i + 1] = yb[:, i]
+    else:
+        raise ValueError(f"Unsupported target shape: {tuple(yb.shape)}")
+
+    if isinstance(model_out, torch.Tensor):
+        pred_map = {1: model_out.view(-1)}
+    elif isinstance(model_out, dict):
+        pred_map = {int(h): p.view(-1) for h, p in model_out.items()}
+    else:
+        raise TypeError("model forward must return Tensor or Dict[int, Tensor]")
+
+    keys = set(pred_map) & set(target_map)
+    if horizons is not None:
+        keys &= set(int(h) for h in horizons)
+    if not keys:
+        raise RuntimeError("No overlapping horizons between predictions and targets.")
+
+    pred_map = {h: pred_map[h] for h in sorted(keys)}
+    target_map = {h: target_map[h] for h in sorted(keys)}
+    return pred_map, target_map
 
 # ----------------------- early stopper -----------------------
 
 @dataclass
 class EarlyStopper:
-    patience: int = 0                 # 0/None disables early stopping
+    patience: int = 0
     best: float = float("inf")
     steps: int = 0
     enabled: bool = True
+    eps: float = 1e-8
 
     def update(self, value: float) -> bool:
         if not self.enabled or self.patience is None or self.patience <= 0:
             return False
-        if value < self.best - 1e-12:
+        if value < (self.best - self.eps):
             self.best = value
             self.steps = 0
             return False
         self.steps += 1
-        return self.steps > self.patience
+        return self.steps >= self.patience
 
+# --------------------- AMP helpers (CUDA/MPS) ----------------
+
+def _amp_context(enabled: bool, device: torch.device, dtype: torch.dtype | None = None):
+    if not enabled:
+        return torch.autocast(device_type="cpu", enabled=False)
+    devtype = device.type
+    if devtype not in {"cuda", "mps"}:
+        return torch.autocast(device_type="cpu", enabled=False)
+    dt = dtype or (torch.bfloat16 if devtype == "cuda" else torch.float16)
+    return torch.autocast(device_type=devtype, dtype=dt, enabled=True)
+
+def _make_scaler(enabled: bool, device: torch.device):
+    # GradScaler is CUDA-only; use no-scaler on MPS/CPU
+    return torch.cuda.amp.GradScaler(enabled=(enabled and device.type == "cuda"))
 
 # ------------------------ train / eval ------------------------
 
@@ -66,40 +108,53 @@ def train_one_epoch(
     device: torch.device,
     optimizer: torch.optim.Optimizer,
     criterion: torch.nn.Module,
+    *,
     grad_clip: Optional[float] = None,
     max_steps: Optional[int] = None,
-    clamp: float = 10.0,         # defensive clamp range for inputs/targets
+    clamp: Optional[float] = 10.0,
+    amp: bool = False,
+    amp_dtype: torch.dtype | None = None,
+    grad_accum_steps: int = 1,
+    loss_reduction: str = "mean_over_horizons",
+    horizons: Optional[Iterable[int]] = None,
 ) -> float:
-    """
-    Train for one epoch. Returns mean loss over *examples* (not batches).
-    Shapes:
-      - model(X) -> [B] or [B,1]; will be flattened to [B]
-      - y -> [B] or [B,1]; will be flattened to [B]
-    """
     model.train()
-    total_loss = 0.0
-    seen = 0
-    steps = 0
+    total_loss, seen, steps = 0.0, 0, 0
+    scaler = _make_scaler(amp, device)
+    optimizer.zero_grad(set_to_none=True)
 
-    for Xb, yb in loader:
+    for batch in loader:
+        Xb, yb = _unpack(batch)
         Xb = Xb.to(device, non_blocking=True)
-        yb = yb.to(device, non_blocking=True).view(-1)
+        yb = yb.to(device, non_blocking=True)
 
-        # Defensive: sanitize batch to avoid NaN/Inf explosions
         Xb, yb, ok = _sanitize_batch(Xb, yb, clamp=clamp)
         if not ok:
-            # If still not finite after sanitization, skip this batch
             continue
 
-        optimizer.zero_grad(set_to_none=True)
-        preds = model(Xb).view(-1)       # [B]
-        loss = criterion(preds, yb)
-        loss.backward()
+        with _amp_context(amp, device, amp_dtype):
+            out = model(Xb)
+            preds, targets = _align_outputs_and_targets(out, yb, horizons=horizons)
+            losses = [criterion(preds[h], targets[h]) for h in preds.keys()]
+            loss = torch.stack(losses).sum() if loss_reduction == "sum_over_horizons" else torch.stack(losses).mean()
 
-        if grad_clip is not None and grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-
-        optimizer.step()
+        if scaler.is_enabled():
+            scaler.scale(loss).backward()
+            if grad_clip and grad_clip > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            do_step = ((steps + 1) % max(1, grad_accum_steps) == 0)
+            if do_step:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+        else:
+            loss.backward()
+            if grad_clip and grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            if (steps + 1) % max(1, grad_accum_steps) == 0:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
 
         bs = yb.shape[0]
         total_loss += float(loss.detach().cpu()) * bs
@@ -109,8 +164,10 @@ def train_one_epoch(
         if max_steps is not None and steps >= max_steps:
             break
 
+    # flush leftover grads if accumulation didn't trigger a step (CUDA scaler path)
+    if scaler.is_enabled() and (steps % max(1, grad_accum_steps) != 0):
+        scaler.step(optimizer); scaler.update(); optimizer.zero_grad(set_to_none=True)
     return total_loss / max(1, seen)
-
 
 @torch.no_grad()
 def evaluate(
@@ -118,43 +175,44 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     criterion: torch.nn.Module,
+    *,
     y_collect_limit: Optional[int] = None,
-    clamp: float = 10.0,         # keep eval numerically stable too
+    clamp: Optional[float] = 10.0,
+    amp: bool = False,
+    amp_dtype: torch.dtype | None = None,
+    loss_reduction: str = "mean_over_horizons",
+    horizons: Optional[Iterable[int]] = None,
 ) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray]]:
-    """
-    Evaluate; returns (mean_loss, y_concat_or_None, pred_concat_or_None).
-    If y_collect_limit is set, caps the concatenated arrays to that size.
-    """
     model.eval()
-    total_loss = 0.0
-    seen = 0
+    total_loss, seen = 0.0, 0
+    ys, ps, collected = [], [], 0
 
-    ys, ps = [], []
-    collected = 0
-
-    for Xb, yb in loader:
+    for batch in loader:
+        Xb, yb = _unpack(batch)
         Xb = Xb.to(device, non_blocking=True)
-        yb = yb.to(device, non_blocking=True).view(-1)
+        yb = yb.to(device, non_blocking=True)
 
-        # Defensive: sanitize batch
         Xb, yb, ok = _sanitize_batch(Xb, yb, clamp=clamp)
         if not ok:
             continue
 
-        preds = model(Xb).view(-1)
-        loss = criterion(preds, yb)
+        with _amp_context(amp, device, amp_dtype):
+            out = model(Xb)
+            preds, targets = _align_outputs_and_targets(out, yb, horizons=horizons)
+            losses = [criterion(preds[h], targets[h]) for h in preds.keys()]
+            loss = torch.stack(losses).sum() if loss_reduction == "sum_over_horizons" else torch.stack(losses).mean()
 
         bs = yb.shape[0]
         total_loss += float(loss.detach().cpu()) * bs
         seen += bs
 
         if y_collect_limit is None or collected < y_collect_limit:
-            y_np = yb.detach().cpu().numpy()
-            p_np = preds.detach().cpu().numpy()
+            h0 = sorted(preds.keys())[0]
+            y_np = targets[h0].detach().cpu().numpy()
+            p_np = preds[h0].detach().cpu().numpy()
             if y_collect_limit is not None and collected + len(y_np) > y_collect_limit:
                 keep = y_collect_limit - collected
-                y_np = y_np[:keep]
-                p_np = p_np[:keep]
+                y_np = y_np[:keep]; p_np = p_np[:keep]
             ys.append(y_np.astype(np.float64, copy=False))
             ps.append(p_np.astype(np.float64, copy=False))
             collected += len(y_np)
@@ -162,7 +220,6 @@ def evaluate(
     y_all = np.concatenate(ys) if ys else None
     p_all = np.concatenate(ps) if ps else None
     return total_loss / max(1, seen), y_all, p_all
-
 
 # ----------------------- checkpointing -----------------------
 
@@ -173,9 +230,6 @@ def save_checkpoint(
     epoch: int,
     val_loss: float,
 ):
-    """
-    Save a simple checkpoint with epoch, val_loss, model & optimizer states.
-    """
     ckpt = {
         "epoch": int(epoch),
         "val_loss": float(val_loss),

@@ -1,0 +1,7 @@
+model:
+  hybrid:
+    impl: lstm_only
+    use_lstm: true
+    lstm_hidden: 160
+    lstm_layers: 1
+    lstm_dropout: 0.1

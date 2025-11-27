@@ -1,0 +1,11 @@
+# overlays/beat17_opt.yaml
+dl:
+  lr: 3.0e-4
+  patience: 10
+  lr_scheduler:
+    name: reduce_on_plateau
+    factor: 0.5
+    patience: 4
+    min_lr: 1.0e-5
+  loss: huber
+  huber_delta: 2.0

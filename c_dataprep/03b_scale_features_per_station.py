@@ -1,81 +1,69 @@
-# 2_dataprep/03_scale_features.py
+#!/usr/bin/env python3
+# c_dataprep/03b_scale_features_per_station.py
 from __future__ import annotations
-import json
-from pathlib import Path
-from typing import Dict, List, Tuple, Iterable, Set
 
+from pathlib import Path
+from typing import Any, Dict, List, Iterable, Set
+import json
 import numpy as np
 import pandas as pd
 
-from common.config_loader import load_cfg  # overlay-aware
+# ensure repo root is importable
+import sys
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from common.config_loader import load_cfg  # noqa: E402
 
 
-# ----------------------- small helpers -----------------------
+# ---------- utils ----------
+def _req(d: Dict[str, Any], path: List[str]) -> Any:
+    cur: Any = d
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur or cur[k] is None:
+            raise KeyError("configs: missing " + ".".join(path))
+        cur = cur[k]
+    return cur
+
+def _under(root: Path, p: str) -> Path:
+    P = Path(p)
+    return P if P.is_absolute() else (root / P)
 
 def _read_df(path: Path, fmt: str) -> pd.DataFrame:
-    if fmt == "parquet":
-        return pd.read_parquet(path)
-    if fmt == "feather":
-        return pd.read_feather(path)
-    if fmt == "csv":
-        return pd.read_csv(path)
-    raise SystemExit(f"Unsupported input format: {fmt}")
+    if not path.exists():
+        return pd.DataFrame()
+    f = fmt.lower()
+    if f == "parquet": return pd.read_parquet(path)
+    if f == "feather": return pd.read_feather(path)
+    if f == "csv":     return pd.read_csv(path)
+    raise SystemExit(f"Unsupported input format: {fmt!r}")
 
 def _write_df(df: pd.DataFrame, path: Path, fmt: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if fmt == "parquet":
-        df.to_parquet(path, index=False)
-    elif fmt == "feather":
-        df.to_feather(path)
-    elif fmt == "csv":
-        df.to_csv(path, index=False)
-    else:
-        raise SystemExit(f"Unsupported output format: {fmt}")
+    f = fmt.lower()
+    if f == "parquet":   df.to_parquet(path, index=False)
+    elif f == "feather": df.reset_index(drop=True).to_feather(path)
+    elif f == "csv":     df.to_csv(path, index=False)
+    else:                raise SystemExit(f"Unsupported output format: {fmt!r}")
 
 def _is_identifier(col: str) -> bool:
     c = str(col).lower()
-    return (
-        c in {"id", "station", "station_id", "district_id", "city_id"} or
-        c.endswith("_id")
-    )
+    return (c in {"id", "station", "station_id", "district_id", "city_id"} or c.endswith("_id"))
 
 def _numeric_cols(df: pd.DataFrame, exclude: Iterable[str]) -> List[str]:
-    """
-    Numeric, non-excluded, and not identifier-like.
-    """
     ex = set(exclude)
-    cols = []
-    for c in df.columns:
-        if c in ex:
-            continue
-        if _is_identifier(c):
-            continue
-        if pd.api.types.is_numeric_dtype(df[c]):
-            cols.append(c)
-    return cols
+    return [c for c in df.columns if c not in ex and not _is_identifier(c) and pd.api.types.is_numeric_dtype(df[c])]
 
-def _split_paths(cfg: Dict, base_dir: Path) -> Tuple[Dict[str, Path], str]:
-    """
-    Resolve input split filenames and format from config.
-    """
-    names: Dict[str, str] = cfg.get("output", {}).get("split_filenames", {}) or {}
-    in_fmt: str = cfg.get("output", {}).get("format", "parquet")
-    paths = {
-        "train": base_dir / names.get("train", f"train.{in_fmt}"),
-        "val":   base_dir / names.get("val",   f"val.{in_fmt}"),
-        "test":  base_dir / names.get("test",  f"test.{in_fmt}"),
-    }
-    return paths, in_fmt
+def _intersect_columns(*dfs: pd.DataFrame) -> Set[str]:
+    non_empty = [d for d in dfs if not d.empty]
+    if not non_empty: return set()
+    common: Set[str] = set(non_empty[0].columns)
+    for d in non_empty[1:]: common &= set(d.columns)
+    return common
 
-def _out_fmt(cfg: Dict, fallback: str) -> str:
-    return cfg.get("scaling", {}).get("output_format", fallback)
-
-def _safe_div(num: np.ndarray, denom: np.ndarray, eps: float) -> np.ndarray:
-    return num / np.where(np.abs(denom) < eps, eps, denom)
+def _norm_id(s: pd.Series) -> pd.Series:
+    return s.astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
 
 
-# ---------------------- parameter fitting ----------------------
-
+# ---------- scalers ----------
 def _fit_params_standard(df: pd.DataFrame, cols: List[str]) -> Dict[str, Dict[str, float]]:
     return {c: {"mean": float(df[c].mean()), "std": float(df[c].std(ddof=0))} for c in cols}
 
@@ -83,229 +71,155 @@ def _fit_params_minmax(df: pd.DataFrame, cols: List[str]) -> Dict[str, Dict[str,
     return {c: {"min": float(df[c].min()), "max": float(df[c].max())} for c in cols}
 
 def _fit_params_robust(df: pd.DataFrame, cols: List[str]) -> Dict[str, Dict[str, float]]:
-    q1 = df[cols].quantile(0.25)
-    q3 = df[cols].quantile(0.75)
-    med = df[cols].median()
-    out = {}
-    for c in cols:
-        out[c] = {"median": float(med[c]), "iqr": float(q3[c] - q1[c])}
+    q1 = df[cols].quantile(0.25); q3 = df[cols].quantile(0.75); med = df[cols].median()
+    return {c: {"median": float(med[c]), "iqr": float(q3[c]-q1[c])} for c in cols}
+
+def _apply_block(block: pd.DataFrame, cols: List[str], params: Dict[str, Dict[str, float]], eps: float, mode: str) -> pd.DataFrame:
+    out = block.copy()
+    if mode == "standard":
+        for c in cols:
+            p = params[c]; denom = p["std"] if abs(p["std"]) >= eps else eps
+            out[c] = (out[c] - p["mean"]) / denom
+    elif mode == "minmax":
+        for c in cols:
+            p = params[c]; denom = (p["max"] - p["min"]) if abs(p["max"]-p["min"]) >= eps else eps
+            out[c] = (out[c] - p["min"]) / denom
+    else:  # robust
+        for c in cols:
+            p = params[c]; denom = p["iqr"] if abs(p["iqr"]) >= eps else eps
+            out[c] = (out[c] - p["median"]) / denom
     return out
 
-def _apply_standard(g: pd.DataFrame, cols: List[str], params: Dict[str, Dict[str, float]], eps: float):
-    for c in cols:
-        p = params.get(c, {})
-        std = p.get("std", 1.0)
-        mean = p.get("mean", 0.0)
-        g[c] = (g[c] - mean) / (std if abs(std) >= eps else eps)
-    return g
 
-def _apply_minmax(g: pd.DataFrame, cols: List[str], params: Dict[str, Dict[str, float]], eps: float):
-    for c in cols:
-        p = params.get(c, {})
-        lo = p.get("min", 0.0)
-        hi = p.get("max", 1.0)
-        denom = (hi - lo) if abs(hi - lo) >= eps else eps
-        g[c] = (g[c] - lo) / denom
-    return g
-
-def _apply_robust(g: pd.DataFrame, cols: List[str], params: Dict[str, Dict[str, float]], eps: float):
-    for c in cols:
-        p = params.get(c, {})
-        med = p.get("median", 0.0)
-        iqr = p.get("iqr", 1.0)
-        g[c] = (g[c] - med) / (iqr if abs(iqr) >= eps else eps)
-    return g
-
-
-# ---------------------- feature lock helpers ----------------------
-
-def _intersect_columns(*dfs: pd.DataFrame) -> Set[str]:
-    """
-    Columns present in ALL provided DataFrames.
-    """
-    common: Set[str] = set(dfs[0].columns)
-    for d in dfs[1:]:
-        common &= set(d.columns)
-    return common
-
-def _build_feature_lock(
-    train_s: pd.DataFrame,
-    val_s: pd.DataFrame,
-    test_s: pd.DataFrame,
-    id_col: str,
-    time_col: str,
-    y_col: str,
-    exclude_cols: Iterable[str],
-) -> Dict:
-    """
-    Build lock from the scaled splits using the intersection of columns across
-    splits, minus exclusions, keeping TRAIN's column order; only numeric dtypes.
-    Also guards against identifier-like columns accidentally entering X.
-    """
+# ---------- feature lock ----------
+def _build_feature_lock(train_s: pd.DataFrame, val_s: pd.DataFrame, test_s: pd.DataFrame,
+                        id_col: str, time_col: str, y_col: str, exclude_cols: Iterable[str]) -> Dict[str, Any]:
     exclude = set(exclude_cols) | {id_col, time_col, y_col}
     common = _intersect_columns(train_s, val_s, test_s)
-    ordered = [c for c in train_s.columns if c in common]
-    X_cols_ordered = [
-        c for c in ordered
-        if c not in exclude
-        and not _is_identifier(c)                      # ← guard
-        and pd.api.types.is_numeric_dtype(train_s[c])
-    ]
-    return {
-        "time_col": time_col,
-        "target_col": y_col,
-        "id_cols": [id_col],
-        "X_cols_ordered": X_cols_ordered,
-    }
+    ordered = [c for c in train_s.columns if c in common] if not train_s.empty else sorted(common)
+    X_cols_ordered = [c for c in ordered if c not in exclude and not _is_identifier(c) and
+                      (not train_s.empty and pd.api.types.is_numeric_dtype(train_s[c]))]
+    return {"time_col": time_col, "target_col": y_col, "id_cols": [id_col], "X_cols_ordered": X_cols_ordered}
 
 
-# -------------------------- main flow ---------------------------
-
+# ---------- main ----------
 def main():
     cfg = load_cfg()
 
-    # Paths
-    art_dir = Path(cfg["paths"]["artifacts_dir"])
-    splits_dir = art_dir / cfg["paths"].get("splits_dir", "splits")
-    scaled_dir = art_dir / cfg["paths"].get("features_scaled_dir", "features_scaled_ps")
+    # paths
+    art_dir    = _under(Path("."), _req(cfg, ["paths", "artifacts_dir"]))
+    splits_dir = _under(art_dir, _req(cfg, ["paths", "splits_dir"]))
+    scaled_dir = _under(art_dir, _req(cfg, ["paths", "features_scaled_dir"]))
+    lock_dir   = _under(art_dir, _req(cfg, ["paths", "features_locked_dir"]))
+    scaled_dir.mkdir(parents=True, exist_ok=True)
+    lock_dir.mkdir(parents=True, exist_ok=True)
 
-    split_paths, in_fmt = _split_paths(cfg, splits_dir)
-    out_fmt = _out_fmt(cfg, in_fmt)
+    # formats
+    in_fmt  = str(_req(cfg, ["output", "format"])).lower()            # input split format
+    out_fmt = str(_req(cfg, ["scaling", "output_format"])).lower()    # output scaled splits format
 
-    # Columns
-    id_col = cfg["data"].get("id_col", "station_id")
-    time_col = cfg["data"]["time_col"]
-    target_col = cfg["data"].get("target", "PM25_Concentration")
+    # split filenames (tolerant)
+    names_cfg = (cfg.get("output", {}) or {}).get("split_filenames", {}) or {}
+    def _fname(key: str) -> str: return str(names_cfg.get(key, f"{key}.{in_fmt}"))
+    p_train = splits_dir / _fname("train")
+    p_val   = splits_dir / _fname("val")
+    p_test  = splits_dir / _fname("test")
 
-    # Scaling config
-    s_cfg = cfg.get("scaling", {})
-    s_type = s_cfg.get("type", "standard").lower()       # standard|minmax|robust
-    per_station = bool(s_cfg.get("per_station", True))   # default True
+    # columns
+    id_col     = str(_req(cfg, ["data", "id_col"]))
+    time_col   = str(_req(cfg, ["data", "time_col"]))
+    target_col = str(_req(cfg, ["data", "target"]))
 
-    # Exclusions: scaling.exclude_columns ∪ missing.drop_features ∪ {id, time} ∪ (target)
-    exclude_cols = set(s_cfg.get("exclude_columns", []) or [])
-    exclude_cols |= set(cfg.get("missing", {}).get("drop_features", []) or {})
-    exclude_cols |= {id_col, time_col}
-    eps = float(s_cfg.get("epsilon", 1e-8))
+    # scaling config
+    s_cfg       = _req(cfg, ["scaling"])
+    mode        = str(_req(s_cfg, ["type"])).lower()                  # standard|minmax|robust
+    per_station = bool(_req(s_cfg, ["per_station"]))
+    eps         = float(_req(s_cfg, ["epsilon"]))
 
-    # Read splits
-    train = _read_df(split_paths["train"], in_fmt)
-    val   = _read_df(split_paths["val"],   in_fmt)
-    test  = _read_df(split_paths["test"],  in_fmt)
+    excl_from_yaml = list((s_cfg.get("exclude_columns") or []))
+    drop_feats_cfg = cfg.get("missing", {}).get("drop_features", [])
+    drop_feats     = list(drop_feats_cfg if isinstance(drop_feats_cfg, (list, tuple, set)) else ([drop_feats_cfg] if drop_feats_cfg else []))
+    exclude_cols   = set(excl_from_yaml) | set(drop_feats) | {id_col, time_col, target_col}
 
-    # Coerce dtypes
-    if time_col in train.columns:
-        train[time_col] = pd.to_datetime(train[time_col], errors="coerce")
-    if time_col in val.columns:
-        val[time_col] = pd.to_datetime(val[time_col], errors="coerce")
-    if time_col in test.columns:
-        test[time_col] = pd.to_datetime(test[time_col], errors="coerce")
-    if id_col in train.columns:
-        train[id_col] = train[id_col].astype(str)
-    if id_col in val.columns:
-        val[id_col] = val[id_col].astype(str)
-    if id_col in test.columns:
-        test[id_col] = test[id_col].astype(str)
+    # read splits
+    train = _read_df(p_train, in_fmt)
+    val   = _read_df(p_val,   in_fmt)
+    test  = _read_df(p_test,  in_fmt)
+    if train.empty:
+        raise SystemExit(f"TRAIN split not found or empty at {p_train}")
 
-    # What to scale (don’t scale target unless explicitly removed from exclude)
-    if target_col:
-        exclude_cols.add(target_col)
+    for df in (train, val, test):
+        if not df.empty:
+            if id_col in df.columns:   df[id_col] = _norm_id(df[id_col])
+            if time_col in df.columns: df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
 
-    # Fit on TRAIN only
+    # numeric cols from TRAIN only
     num_cols = _numeric_cols(train, exclude=exclude_cols)
     if not num_cols:
-        raise SystemExit("No numeric feature columns found to scale (after exclusions).")
+        raise SystemExit("No numeric feature columns to scale after exclusions.")
 
-    # ------------ Fit parameters on train (global and/or per-station) ------------
+    # fit params
     def _fit(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
-        if s_type == "standard":
-            return _fit_params_standard(df, num_cols)
-        if s_type == "minmax":
-            return _fit_params_minmax(df, num_cols)
-        if s_type == "robust":
-            return _fit_params_robust(df, num_cols)
-        raise SystemExit(f"Unknown scaling.type: {s_type}")
+        if mode == "standard": return _fit_params_standard(df, num_cols)
+        if mode == "minmax":   return _fit_params_minmax(df, num_cols)
+        if mode == "robust":   return _fit_params_robust(df, num_cols)
+        raise SystemExit(f"Unknown scaling.type: {mode}")
 
-    # Global params (useful as fallback)
     global_params = _fit(train)
-
-    # Per-station params (fit only on that station’s TRAIN slice)
     station_params: Dict[str, Dict[str, Dict[str, float]]] = {}
     if per_station and id_col in train.columns:
-        for sid, g in train.groupby(id_col):
+        for sid, g in train.groupby(id_col, sort=False):
             station_params[str(sid)] = _fit(g)
 
-    # ------------ Apply transform to each split ------------
+    # apply
     def _apply(df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
+        if df.empty: return df
         out = df.copy()
         if per_station and id_col in out.columns and station_params:
-            # apply per-station if available, else fallback to global params
-            for sid, g in out.groupby(id_col):
+            for sid, g in out.groupby(id_col, sort=False):
                 params = station_params.get(str(sid), global_params)
-                if s_type == "standard":
-                    out.loc[g.index, num_cols] = _apply_standard(g[num_cols].copy(), num_cols, params, eps)
-                elif s_type == "minmax":
-                    out.loc[g.index, num_cols] = _apply_minmax(g[num_cols].copy(), num_cols, params, eps)
-                else:  # robust
-                    out.loc[g.index, num_cols] = _apply_robust(g[num_cols].copy(), num_cols, params, eps)
+                out.loc[g.index, num_cols] = _apply_block(g[num_cols], num_cols, params, eps, mode)
         else:
-            # global scaling
-            g = out[num_cols].copy()
-            if s_type == "standard":
-                out[num_cols] = _apply_standard(g, num_cols, global_params, eps)
-            elif s_type == "minmax":
-                out[num_cols] = _apply_minmax(g, num_cols, global_params, eps)
-            else:
-                out[num_cols] = _apply_robust(g, num_cols, global_params, eps)
+            out[num_cols] = _apply_block(out[num_cols], num_cols, global_params, eps, mode)
+        out.replace([np.inf, -np.inf], np.nan, inplace=True)
         return out
 
-    train_s = _apply(train)
-    val_s   = _apply(val)
-    test_s  = _apply(test)
+    train_s, val_s, test_s = _apply(train), _apply(val), _apply(test)
 
-    # ------------ Persist scaled splits ------------
+    # write scaled splits
     _write_df(train_s, scaled_dir / f"train.{out_fmt}", out_fmt)
     _write_df(val_s,   scaled_dir / f"val.{out_fmt}",   out_fmt)
     _write_df(test_s,  scaled_dir / f"test.{out_fmt}",  out_fmt)
 
-    # ------------ Scaler meta (single canonical file) ------------
-    mode_scope = f"{s_type}_{'per_station' if per_station else 'global'}"
+    # scaler meta
     meta = {
-        "mode": mode_scope,
-        "type": s_type,
+        "mode": f"{mode}_{'per_station' if per_station else 'global'}",
+        "type": mode,
         "per_station": per_station,
         "id_col": id_col,
         "time_col": time_col,
         "exclude_columns": sorted(list(exclude_cols)),
         "scaled_numeric_cols": num_cols,
-        "global_params": global_params,                          # always included (fallback reference)
-        "station_params": station_params if per_station else {}, # empty when global
+        "global_params": global_params,
+        "station_params": station_params if per_station else {},
     }
     (scaled_dir / "scaler_params.json").write_text(json.dumps(meta, indent=2))
 
-    # ------------ Feature lock (from SCALED splits) ------------
-    lock = _build_feature_lock(
-        train_s=train_s,
-        val_s=val_s,
-        test_s=test_s,
-        id_col=id_col,
-        time_col=time_col,
-        y_col=target_col,
-        exclude_cols=exclude_cols,  # honors scaling.exclude_columns + missing.drop_features + id/time/target
-    )
-    lock_dir = art_dir / "features_locked"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    (lock_dir / "feature_list.json").write_text(json.dumps(lock, indent=2))
+    # feature lock
+    lock_name = str(_req(cfg, ["features", "locked_manifest"]))
+    lock_obj  = _build_feature_lock(train_s, val_s, test_s, id_col, time_col, target_col, exclude_cols)
+    (lock_dir / lock_name).write_text(json.dumps(lock_obj, indent=2))
 
-    # ------------ Console summary ------------
+    # console summary
+    n_train_st = train_s[id_col].nunique() if id_col in train_s else 0
+    n_val_st   = (val_s[id_col].nunique() if (not val_s.empty and id_col in val_s) else 0)
+    n_test_st  = (test_s[id_col].nunique() if (not test_s.empty and id_col in test_s) else 0)
     print(f"[OK] wrote scaled splits → {scaled_dir}")
-    print(f"  train: rows={len(train_s):,}  stations={train_s[id_col].nunique() if id_col in train_s else 0}")
-    print(f"  val:   rows={len(val_s):,}    stations={val_s[id_col].nunique() if id_col in val_s else 0}")
-    print(f"  test:  rows={len(test_s):,}   stations={test_s[id_col].nunique() if id_col in test_s else 0}")
-    print(f"[OK] scaler meta → {scaled_dir/'scaler_params.json'}  (mode={mode_scope})")
-    print(f"[lock] wrote {lock_dir/'feature_list.json'} with {len(lock['X_cols_ordered'])} features")
+    print(f"  train: rows={len(train_s):,}  stations={n_train_st}")
+    print(f"  val:   rows={len(val_s):,}    stations={n_val_st}")
+    print(f"  test:  rows={len(test_s):,}   stations={n_test_st}")
+    print(f"[OK] scaler meta → {scaled_dir/'scaler_params.json'}")
+    print(f"[lock] wrote {(lock_dir/lock_name)} with {len(lock_obj['X_cols_ordered'])} features")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,698 @@
+[run_all] CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+
+******** 00_clean ********
+****************************************
+[00_clean] repo=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[00_clean] artifacts=experiments/artifacts
+****************************************
+[00_clean] Removing:
+ - not found:    experiments/artifacts/seq
+ - not found:    experiments/artifacts/features_scaled_ps
+ - not found:    experiments/artifacts/features_scaled
+ - removed:     experiments/artifacts/models
+ - removed:     experiments/artifacts/models_mps
+ - removed:     experiments/artifacts/reports
+ - not found:    experiments/artifacts/checkpoints
+ - not found:    experiments/artifacts/duplicates_summary.json
+ - not found:    experiments/artifacts/split_summary.json
+ - created:      experiments/artifacts/models
+ - created:      experiments/artifacts/models_mps
+ - created:      experiments/artifacts/reports
+****************************************
+[00_clean] Fresh dirs → experiments/artifacts/models, experiments/artifacts/models_mps, experiments/artifacts/reports
+[00_clean] Done.
+****************************************
+
+******** 01_make_data ********
+[01_make_data.sh] Using CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[01_make_data.sh] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[01_make_data.sh] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python
+[1/3] b_ingestion/01_csv2parquet_safe.py
+[csv2parquet] CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[csv2parquet] DATA_DIR=raw_data  →  ART_DIR=experiments/artifacts
+[OK] wrote air, met, station, district, city, forecast in experiments/artifacts
+[2/3] b_ingestion/02_build_stream.py
+[build] station_scope=min_rows≥5000 kept=182 of 437
+[build] stations=182  time=[1970-01-01 08:00:00 → 2015-04-30 23:00:00]
+[1/182] station=1003 …
+[2/182] station=1006 …
+[3/182] station=1007 …
+[4/182] station=1009 …
+[5/182] station=1012 …
+[6/182] station=1013 …
+[7/182] station=1015 …
+[8/182] station=1020 …
+[9/182] station=1022 …
+[10/182] station=1023 …
+[11/182] station=1024 …
+[12/182] station=1027 …
+[13/182] station=1030 …
+[14/182] station=4002 …
+[15/182] station=4003 …
+[16/182] station=4007 …
+[17/182] station=4008 …
+[18/182] station=4009 …
+[19/182] station=4011 …
+[20/182] station=4014 …
+[21/182] station=4017 …
+[22/182] station=4018 …
+[23/182] station=4019 …
+[24/182] station=4020 …
+[25/182] station=6005 …
+[26/182] station=6024 …
+[27/182] station=6026 …
+[28/182] station=6028 …
+[29/182] station=9016 …
+[30/182] station=9017 …
+[31/182] station=9018 …
+[32/182] station=9019 …
+[33/182] station=9020 …
+[34/182] station=9022 …
+[35/182] station=9023 …
+[36/182] station=9024 …
+[37/182] station=9025 …
+[38/182] station=9026 …
+[39/182] station=9058 …
+[40/182] station=11001 …
+[41/182] station=11002 …
+[42/182] station=11003 …
+[43/182] station=11004 …
+[44/182] station=11005 …
+[45/182] station=11006 …
+[46/182] station=11007 …
+[47/182] station=11008 …
+[48/182] station=13001 …
+[49/182] station=13002 …
+[50/182] station=13003 …
+[51/182] station=13004 …
+[52/182] station=13005 …
+[53/182] station=13006 …
+[54/182] station=14001 …
+[55/182] station=14002 …
+[56/182] station=14003 …
+[57/182] station=14004 …
+[58/182] station=14005 …
+[59/182] station=17001 …
+[60/182] station=17002 …
+[61/182] station=17003 …
+[62/182] station=17004 …
+[63/182] station=17005 …
+[64/182] station=17006 …
+[65/182] station=19001 …
+[66/182] station=19002 …
+[67/182] station=19003 …
+[68/182] station=19004 …
+[69/182] station=19005 …
+[70/182] station=20001 …
+[71/182] station=20002 …
+[72/182] station=20003 …
+[73/182] station=20004 …
+[74/182] station=20005 …
+[75/182] station=21001 …
+[76/182] station=21002 …
+[77/182] station=21003 …
+[78/182] station=22001 …
+[79/182] station=22002 …
+[80/182] station=22003 …
+[81/182] station=22004 …
+[82/182] station=23001 …
+[83/182] station=23002 …
+[84/182] station=23003 …
+[85/182] station=24001 …
+[86/182] station=24002 …
+[87/182] station=24003 …
+[88/182] station=25001 …
+[89/182] station=25002 …
+[90/182] station=25003 …
+[91/182] station=25004 …
+[92/182] station=26001 …
+[93/182] station=26002 …
+[94/182] station=26003 …
+[95/182] station=26004 …
+[96/182] station=26005 …
+[97/182] station=26006 …
+[98/182] station=26007 …
+[99/182] station=26008 …
+[100/182] station=27001 …
+[101/182] station=27002 …
+[102/182] station=27003 …
+[103/182] station=28001 …
+[104/182] station=28002 …
+[105/182] station=28003 …
+[106/182] station=28004 …
+[107/182] station=28007 …
+[108/182] station=29001 …
+[109/182] station=29004 …
+[110/182] station=29007 …
+[111/182] station=30002 …
+[112/182] station=30003 …
+[113/182] station=30004 …
+[114/182] station=31001 …
+[115/182] station=31002 …
+[116/182] station=31003 …
+[117/182] station=31004 …
+[118/182] station=32001 …
+[119/182] station=32002 …
+[120/182] station=32003 …
+[121/182] station=33001 …
+[122/182] station=33002 …
+[123/182] station=33003 …
+[124/182] station=34001 …
+[125/182] station=34002 …
+[126/182] station=34003 …
+[127/182] station=34004 …
+[128/182] station=34005 …
+[129/182] station=34006 …
+[130/182] station=35001 …
+[131/182] station=35002 …
+[132/182] station=35003 …
+[133/182] station=36001 …
+[134/182] station=36002 …
+[135/182] station=36003 …
+[136/182] station=36004 …
+[137/182] station=36005 …
+[138/182] station=37001 …
+[139/182] station=37002 …
+[140/182] station=37003 …
+[141/182] station=38001 …
+[142/182] station=38002 …
+[143/182] station=38003 …
+[144/182] station=40001 …
+[145/182] station=40002 …
+[146/182] station=40003 …
+[147/182] station=41001 …
+[148/182] station=41002 …
+[149/182] station=41003 …
+[150/182] station=41004 …
+[151/182] station=42001 …
+[152/182] station=42002 …
+[153/182] station=42003 …
+[154/182] station=42004 …
+[155/182] station=128001 …
+[156/182] station=128002 …
+[157/182] station=128003 …
+[158/182] station=128004 …
+[159/182] station=128005 …
+[160/182] station=128006 …
+[161/182] station=128007 …
+[162/182] station=149001 …
+[163/182] station=149004 …
+[164/182] station=149006 …
+[165/182] station=149007 …
+[166/182] station=149009 …
+[167/182] station=149010 …
+[168/182] station=149014 …
+[169/182] station=149015 …
+[170/182] station=151004 …
+[171/182] station=151007 …
+[172/182] station=151009 …
+[173/182] station=151011 …
+[174/182] station=152001 …
+[175/182] station=152002 …
+[176/182] station=152004 …
+[177/182] station=159001 …
+[178/182] station=159002 …
+[179/182] station=159003 …
+[180/182] station=160001 …
+[181/182] station=160005 …
+[182/182] station=160006 …
+[OK] wrote partitioned dataset → experiments/artifacts/dataset_stream
+Read via pyarrow.dataset: ds.dataset(str(out_dir))
+[3/3] b_ingestion/03_inspect_dataset.py
+
+=== COVERAGE SUMMARY ===
+Files: 182
+Stations: 182
+Coverage threshold (CORE mean): 50%
+Keep: 0  |  Exclude: 182
+
+Mean CORE coverage across stations:
+  temperature=0.00, humidity=0.00, pressure=0.00, wind_speed=0.00, wind_direction=0.00
+
+Outputs:
+  - station_missingness_csv: experiments/artifacts/station_missingness.csv
+  - stations_keep_txt: experiments/artifacts/stations_keep.txt
+  - stations_exclude_txt: experiments/artifacts/stations_exclude.txt
+  - dataset_report_json: experiments/artifacts/dataset_report.json
+********************************01_make_data.sh] DONE********************************
+
+******** 02_dataprep ********
+[02_dataprep.sh] Using CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[02_dataprep.sh] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[02_dataprep.sh] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python
+[1/10] c_dataprep/02_engineer_features.py
+[filter] drop_years=[1970]: rows 1,476,123 -> 1,476,123
+[OK] wrote features → experiments/artifacts/features/dataset_features.parquet
+[OK] wrote manifest → experiments/artifacts/features/features_manifest.json
+
+=== SPLIT DATE RANGES (from features inputs) ===
+[train] rows=1030849 start=2014-05-01 00:00:00 end=2014-12-31 00:00:00
+[val] rows= 335753 start=2014-12-31 01:00:00 end=2015-03-31 00:00:00
+[test] rows= 109521 start=2015-03-31 01:00:00 end=2015-04-30 23:00:00
+{
+  "input_rows": 1476123,
+  "rows_after_key_clean": 1476123,
+  "rows_after_dedup": 1476123,
+  "dropped_total": 0,
+  "id_col_resolved": "station_id",
+  "time_col_resolved": "Datetime"
+}
+[dedupe] overwrote → experiments/artifacts/features/dataset_features.parquet
+[1.5/10] c_dataprep/01c_dedupe_splits.py
+{
+  "deduped_splits": {
+    "train": {
+      "rows": 1030849,
+      "dropped": 0
+    },
+    "val": {
+      "rows": 335753,
+      "dropped": 0
+    },
+    "test": {
+      "rows": 109521,
+      "dropped": 0
+    }
+  }
+}
+[2/10] c_dataprep/01_make_splits.py
+[filter] drop_years=[1970]: rows 1,476,123 -> 1,476,123
+[config] CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[input]  features: experiments/artifacts/features/dataset_features.parquet (parquet)
+[split]  train_end=2014-12-31 00:00:00  val_end=2015-03-31 00:00:00  time_col=Datetime
+[OK] wrote train rows= 1030849 → experiments/artifacts/splits/train.parquet
+[OK] wrote val   rows=  335753 → experiments/artifacts/splits/val.parquet
+[OK] wrote test  rows=  109521 → experiments/artifacts/splits/test.parquet
+[OK] wrote split summary → experiments/artifacts/splits/split_summary.json
+[3/10] c_dataprep/02c_impute_past_only.py
+[config] CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[impute] loading: experiments/artifacts/features/dataset_features.parquet  (format=parquet)
+[impute] wrote: experiments/artifacts/features/dataset_features_imputed.parquet
+[impute] activated by overwrite: experiments/artifacts/features/dataset_features.parquet
+[4/10] c_dataprep/03_feature_eng.py
+[filter] drop_years=[1970]: rows 1,476,123 -> 1,476,123
+[OK] wrote features → experiments/artifacts/features/dataset_features.parquet
+[OK] wrote manifest → experiments/artifacts/features/features_manifest.json
+
+=== SPLIT DATE RANGES (from features inputs) ===
+[train] rows=1030849 start=2014-05-01 00:00:00 end=2014-12-31 00:00:00
+[val] rows= 335753 start=2014-12-31 01:00:00 end=2015-03-31 00:00:00
+[test] rows= 109521 start=2015-03-31 01:00:00 end=2015-04-30 23:00:00
+[5/10] c_dataprep/03b_scale_features_per_station.py
+[OK] wrote scaled splits → experiments/artifacts/features_scaled_ps
+  train: rows=1,030,849  stations=182
+  val:   rows=335,753    stations=182
+  test:  rows=109,521   stations=175
+[OK] scaler meta → experiments/artifacts/features_scaled_ps/scaler_params.json
+[lock] wrote experiments/artifacts/features_locked/feature_list.json with 15 features
+[6/10] c_dataprep/04_check_prep.py
+[OK] timestamps are monotonic per station
+[OK] PM25_Concentration_lag1h matches past-only shift
+[OK] PM25_Concentration_lag3h matches past-only shift
+[OK] PM25_Concentration_lag6h matches past-only shift
+[OK] PM25_Concentration_lag12h matches past-only shift
+[OK] PM25_Concentration_lag24h matches past-only shift
+[OK] PM25_Concentration_lag48h matches past-only shift
+[OK] train split ≤ train_end
+[OK] val split within (train_end, val_end]
+[OK] test split > val_end
+[done] leakage/ordering checks complete.
+[7/10] c_dataprep/05_check_leakage.py
+[OK] timestamps are monotonic per station
+[OK] PM25_Concentration_lag1h matches past-only shift
+[OK] PM25_Concentration_lag3h matches past-only shift
+[OK] PM25_Concentration_lag6h matches past-only shift
+[OK] PM25_Concentration_lag12h matches past-only shift
+[OK] PM25_Concentration_lag24h matches past-only shift
+[OK] PM25_Concentration_lag48h matches past-only shift
+[OK] train split ≤ train_end
+[OK] val split within (train_end, val_end]
+[OK] test split > val_end
+[done] leakage checks complete.
+[8/10] c_dataprep/06_check_duplicates.py
+[splits/train] rows=1,030,849  dup_rows=0  dup_key_groups=0
+[splits/val] rows=335,753  dup_rows=0  dup_key_groups=0
+[splits/test] rows=109,521  dup_rows=0  dup_key_groups=0
+[features/dataset_features] rows=1,476,123  dup_rows=0  dup_key_groups=0
+[features_scaled/train] rows=1,030,849  dup_rows=0  dup_key_groups=0
+[features_scaled/val] rows=335,753  dup_rows=0  dup_key_groups=0
+[features_scaled/test] rows=109,521  dup_rows=0  dup_key_groups=0
+
+[OK] wrote experiments/artifacts/reports/duplicates_summary.json
+[9/10] c_dataprep/07_quick_stats.py
+{
+  "splits": {
+    "train": {
+      "rows": 1030849,
+      "stations": 182,
+      "tmin": "2014-05-01 00:00:00",
+      "tmax": "2014-12-31 00:00:00"
+    },
+    "val": {
+      "rows": 335753,
+      "stations": 182,
+      "tmin": "2014-12-31 01:00:00",
+      "tmax": "2015-03-31 00:00:00"
+    },
+    "test": {
+      "rows": 109521,
+      "stations": 175,
+      "tmin": "2015-03-31 01:00:00",
+      "tmax": "2015-04-30 23:00:00"
+    }
+  },
+  "features": {
+    "rows": 1476123,
+    "cols": [
+      "station_id",
+      "Datetime",
+      "CO_Concentration",
+      "NO2_Concentration",
+      "O3_Concentration",
+      "PM10_Concentration",
+      "PM25_Concentration",
+      "SO2_Concentration",
+      "city_id",
+      "district_id",
+      "PM25_Concentration_lag1h",
+      "PM25_Concentration_lag3h",
+      "PM25_Concentration_lag6h",
+      "PM25_Concentration_lag12h",
+      "PM25_Concentration_lag24h",
+      "PM25_Concentration_lag48h",
+      "hour_sin",
+      "hour_cos",
+      "dow_sin",
+      "dow_cos"
+    ],
+    "target_in_features": true
+  }
+}
+[OK] wrote experiments/artifacts/reports/quick_stats.json
+[10/10] c_dataprep/08_plot_distributions.py
+Traceback (most recent call last):
+  File "/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/c_dataprep/08_plot_distributions.py", line 7, in <module>
+    import numpy as np, pandas as pd, matplotlib.pyplot as plt
+ModuleNotFoundError: No module named 'matplotlib'
+******************************** data prep done ********************************
+
+******** 03_modelprep ********
+[03_modelprep] Using CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[03_modelprep] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[03_modelprep] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python
+[03_modelprep] artifacts_dir=experiments/artifacts
+[03_modelprep] seq_dir=experiments/artifacts/seq
+[03_modelprep] scaled_dir=experiments/artifacts/features_scaled_ps
+[03_modelprep] split format=parquet
+[03_modelprep] Scaled splits present — skipping scaling
+[03_modelprep] Building sequence windows
+=== SPLIT HEALTH REPORT ===
+[train] rows=1,030,849  stations=182  time=[2014-05-01 00:00:00 → 2014-12-31 00:00:00]
+[train] NaN rate: y=0.019  X(sample)={CO_Concentration:0.024, NO2_Concentration:0.037, O3_Concentration:0.034, PM10_Concentration:0.113, SO2_Concentration:0.022, PM25_Concentration_lag1h:0.019, PM25_Concentration_lag3h:0.020, PM25_Concentration_lag6h:0.020}
+[train] Upper-bound windows (no NaN) H=1: ~506,641
+[val] rows=335,753  stations=182  time=[2014-12-31 01:00:00 → 2015-03-31 00:00:00]
+[val] NaN rate: y=0.009  X(sample)={CO_Concentration:0.017, NO2_Concentration:0.023, O3_Concentration:0.025, PM10_Concentration:0.040, SO2_Concentration:0.020, PM25_Concentration_lag1h:0.009, PM25_Concentration_lag3h:0.009, PM25_Concentration_lag6h:0.009}
+[val] Upper-bound windows (no NaN) H=1: ~159,197
+[test] rows=109,521  stations=175  time=[2015-03-31 01:00:00 → 2015-04-30 23:00:00]
+[test] NaN rate: y=0.013  X(sample)={CO_Concentration:0.018, NO2_Concentration:0.031, O3_Concentration:0.025, PM10_Concentration:0.038, SO2_Concentration:0.025, PM25_Concentration_lag1h:0.013, PM25_Concentration_lag3h:0.014, PM25_Concentration_lag6h:0.014}
+[test] Upper-bound windows (no NaN) H=1: ~46,314
+=== SEQUENCE WINDOWING ===
+[train][H=1] shards=125  windows=496,953  shape=[B,96,15]  dtype=float32  time=18.23s  → experiments/artifacts/seq/train/h=1
+[val][H=1] shards=40  windows=157,810  shape=[B,96,15]  dtype=float32  time=5.72s  → experiments/artifacts/seq/val/h=1
+[test][H=1] shards=12  windows=45,780  shape=[B,96,15]  dtype=float32  time=1.56s  → experiments/artifacts/seq/test/h=1
+=== DONE ===
+[total runtime] 25.68s
+[manifest] experiments/artifacts/seq/manifest.json
+[03_modelprep] Using feature lock: experiments/artifacts/features_locked/feature_list.json
+[03_modelprep] Checking sequence windows
+=== WINDOW CHECKS ===
+[info] manifest: experiments/artifacts/seq/manifest.json
+[info] sampling up to 2 shard(s) per (split,horizon)
+[train][H=  1] shards=125 checked= 2 sampled_windows=8,000 y_range=[3.000,464.000] X.dtype=float32 y.dtype=float32 size=869.67 KB dir=experiments/artifacts/seq/train/h=1 (0.01s)
+[val][H=  1] shards=40 checked= 2 sampled_windows=8,000 y_range=[3.000,651.000] X.dtype=float32 y.dtype=float32 size=938.94 KB dir=experiments/artifacts/seq/val/h=1 (0.01s)
+[test][H=  1] shards=12 checked= 2 sampled_windows=8,000 y_range=[2.000,722.000] X.dtype=float32 y.dtype=float32 size=984.54 KB dir=experiments/artifacts/seq/test/h=1 (0.01s)
+[done] total runtime 0.05s
+******************************** [03_modelprep] ******************************** DONE
+
+******** 04_train_hybrid ********
+[train_hybrid] Using CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[train_hybrid] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[train_hybrid] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python
+[train_hybrid] artifacts_dir=experiments/artifacts
+[train_hybrid] seq_dir=experiments/artifacts/seq
+[train_hybrid] Launching: /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python -m e_training.train_hybrid
+[DL] device=mps bs=64 workers=2 pin_memory=False prefetch=2 grad_accum_steps=1
+[DL] AMP: enabled=False dtype=torch.float16 device=mps
+[LR] ReduceLROnPlateau factor=0.5 patience=5 min_lr=5e-06
+[Model] impl=transformer_only
+=== HYBRID MODEL SUMMARY ===
+Input features: 15
+CNN: 0 layer(s)
+LSTM: disabled
+Transformer layers: 3
+Positional Encoding: enabled
+Pooling: gap
+Station embedding: disabled
+Horizons: [1]
+=====================================
+[H=1] ep 001  train=0.095796  val=0.167741
+[H=1] ep 002  train=0.054891  val=0.164819
+[H=1] ep 003  train=0.053637  val=0.164222
+[H=1] ep 004  train=0.052710  val=0.168438
+[H=1] ep 005  train=0.052030  val=0.163598
+[H=1] ep 006  train=0.051615  val=0.161494
+[H=1] ep 007  train=0.051049  val=0.161791
+[H=1] ep 008  train=0.050716  val=0.160467
+[H=1] ep 009  train=0.050489  val=0.164032
+[H=1] ep 010  train=0.049923  val=0.161678
+[H=1] ep 011  train=0.049980  val=0.166037
+[H=1] ep 012  train=0.049575  val=0.164607
+[H=1] ep 013  train=0.049045  val=0.159115
+[H=1] ep 014  train=0.048818  val=0.161012
+[H=1] ep 015  train=0.048650  val=0.159579
+[H=1] ep 016  train=0.048307  val=0.158546
+[H=1] ep 017  train=0.047970  val=0.159089
+[H=1] ep 018  train=0.047870  val=0.158280
+[H=1] ep 019  train=0.047348  val=0.160941
+[H=1] ep 020  train=0.047229  val=0.159199
+[H=1] ep 021  train=0.046995  val=0.157878
+[H=1] ep 022  train=0.046677  val=0.157731
+[H=1] ep 023  train=0.046499  val=0.159914
+[H=1] ep 024  train=0.046050  val=0.159435
+[H=1] ep 025  train=0.045973  val=0.158432
+[H=1] ep 026  train=0.045701  val=0.160114
+[H=1] ep 027  train=0.045373  val=0.160312
+[H=1] ep 028  train=0.045211  val=0.158187
+[H=1] ep 029  train=0.046535  val=0.155353
+[H=1] ep 030  train=0.046062  val=0.155250
+[H=1] ep 031  train=0.045947  val=0.153998
+[H=1] ep 032  train=0.045584  val=0.154260
+[H=1] ep 033  train=0.045264  val=0.153887
+[H=1] ep 034  train=0.045010  val=0.155084
+[H=1] ep 035  train=0.044709  val=0.151928
+[H=1] ep 036  train=0.044545  val=0.151805
+[H=1] ep 037  train=0.044432  val=0.151876
+[H=1] ep 038  train=0.044237  val=0.153241
+[H=1] ep 039  train=0.043998  val=0.152900
+[H=1] ep 040  train=0.043772  val=0.153699
+[H=1] ep 041  train=0.043685  val=0.153911
+[H=1] ep 042  train=0.043477  val=0.152109
+[H=1] ep 043  train=0.045750  val=0.149932
+[H=1] ep 044  train=0.045506  val=0.147029
+[H=1] ep 045  train=0.045362  val=0.148412
+[H=1] ep 046  train=0.045073  val=0.148118
+[H=1] ep 047  train=0.044827  val=0.146582
+[H=1] ep 048  train=0.044838  val=0.147915
+[H=1] ep 049  train=0.044619  val=0.146150
+[H=1] ep 050  train=0.044292  val=0.148847
+[H=1] ep 051  train=0.044059  val=0.147844
+[H=1] ep 052  train=0.044020  val=0.147435
+[H=1] ep 053  train=0.043790  val=0.148085
+[H=1] ep 054  train=0.043756  val=0.147310
+[H=1] ep 055  train=0.043634  val=0.147373
+[H=1] ep 056  train=0.046795  val=0.139705
+[H=1] ep 057  train=0.046394  val=0.139240
+[H=1] ep 058  train=0.046081  val=0.137755
+[H=1] ep 059  train=0.045908  val=0.137745
+[H=1] ep 060  train=0.045596  val=0.137548
+[H=1] ep 061  train=0.045390  val=0.136831
+[H=1] ep 062  train=0.045292  val=0.136174
+[H=1] ep 063  train=0.044990  val=0.135290
+[H=1] ep 064  train=0.044878  val=0.136605
+[H=1] ep 065  train=0.044665  val=0.135981
+[H=1] ep 066  train=0.044415  val=0.134793
+[H=1] ep 067  train=0.044526  val=0.134604
+[H=1] ep 068  train=0.044265  val=0.134846
+[H=1] ep 069  train=0.044187  val=0.133984
+[H=1] ep 070  train=0.044008  val=0.134981
+[H=1] ep 071  train=0.043754  val=0.134819
+[H=1] ep 072  train=0.043489  val=0.133812
+[H=1] ep 073  train=0.043470  val=0.134433
+[H=1] ep 074  train=0.043287  val=0.132880
+[H=1] ep 075  train=0.043205  val=0.133602
+[H=1] ep 076  train=0.043225  val=0.132979
+[H=1] ep 077  train=0.042987  val=0.133161
+[H=1] ep 078  train=0.042893  val=0.131798
+[H=1] ep 079  train=0.042609  val=0.132701
+[H=1] ep 080  train=0.042747  val=0.130700
+[H=1] ep 081  train=0.042493  val=0.131561
+[H=1] ep 082  train=0.042448  val=0.131395
+[H=1] ep 083  train=0.042225  val=0.132090
+[H=1] ep 084  train=0.042070  val=0.131942
+[H=1] ep 085  train=0.041972  val=0.132542
+[H=1] ep 086  train=0.041975  val=0.131509
+[H=1] ep 087  train=0.045374  val=0.122413
+[H=1] ep 088  train=0.045059  val=0.120502
+[H=1] ep 089  train=0.044858  val=0.120486
+[H=1] ep 090  train=0.044794  val=0.119996
+[H=1] ep 091  train=0.044495  val=0.119896
+[H=1] ep 092  train=0.044225  val=0.120079
+[H=1] ep 093  train=0.044078  val=0.119862
+[H=1] ep 094  train=0.044069  val=0.119847
+[H=1] ep 095  train=0.043914  val=0.120102
+[H=1] ep 096  train=0.043867  val=0.119371
+[H=1] ep 097  train=0.043703  val=0.119874
+[H=1] ep 098  train=0.043609  val=0.119631
+[H=1] ep 099  train=0.043432  val=0.119977
+[H=1] ep 100  train=0.043370  val=0.119728
+[H=1] ep 101  train=0.043256  val=0.119854
+[H=1] ep 102  train=0.043299  val=0.119337
+[H=1] ep 103  train=0.042995  val=0.119252
+[H=1] ep 104  train=0.043096  val=0.119643
+[H=1] ep 105  train=0.042938  val=0.119748
+[H=1] ep 106  train=0.042782  val=0.119624
+[H=1] ep 107  train=0.042748  val=0.119491
+[H=1] ep 108  train=0.042574  val=0.119136
+[H=1] ep 109  train=0.042483  val=0.118510
+[H=1] ep 110  train=0.042434  val=0.118981
+[H=1] ep 111  train=0.042382  val=0.119550
+[H=1] ep 112  train=0.042182  val=0.120156
+[H=1] ep 113  train=0.042183  val=0.119561
+[H=1] ep 114  train=0.042075  val=0.119002
+[H=1] ep 115  train=0.042043  val=0.119972
+[H=1] ep 116  train=0.046883  val=0.112654
+[H=1] ep 117  train=0.046337  val=0.112708
+[H=1] ep 118  train=0.046243  val=0.111795
+[H=1] ep 119  train=0.045929  val=0.111681
+[H=1] ep 120  train=0.045866  val=0.111885
+[H=1] ep 121  train=0.045806  val=0.111642
+[H=1] ep 122  train=0.045538  val=0.111570
+[H=1] ep 123  train=0.045497  val=0.111343
+[H=1] ep 124  train=0.045496  val=0.111288
+[H=1] ep 125  train=0.045258  val=0.111285
+[H=1] ep 126  train=0.045228  val=0.111130
+[H=1] ep 127  train=0.045022  val=0.110950
+[H=1] ep 128  train=0.044874  val=0.110732
+[H=1] ep 129  train=0.044841  val=0.111252
+[H=1] ep 130  train=0.044724  val=0.110994
+[H=1] ep 131  train=0.044736  val=0.110961
+[H=1] ep 132  train=0.044579  val=0.110820
+[H=1] ep 133  train=0.044495  val=0.111335
+[H=1] ep 134  train=0.044541  val=0.110628
+[H=1] ep 135  train=0.044370  val=0.111106
+[H=1] ep 136  train=0.044404  val=0.110539
+[H=1] ep 137  train=0.044240  val=0.110670
+[H=1] ep 138  train=0.044126  val=0.111037
+[H=1] ep 139  train=0.044094  val=0.111408
+[H=1] ep 140  train=0.044011  val=0.110724
+[H=1] ep 141  train=0.043841  val=0.110504
+[H=1] ep 142  train=0.043930  val=0.111012
+[H=1] ep 143  train=0.043746  val=0.111036
+[H=1] ep 144  train=0.043806  val=0.110595
+[H=1] ep 145  train=0.043644  val=0.110043
+[H=1] ep 146  train=0.043636  val=0.110702
+[H=1] ep 147  train=0.043580  val=0.110813
+[H=1] ep 148  train=0.043484  val=0.110196
+[H=1] ep 149  train=0.043470  val=0.110662
+[H=1] ep 150  train=0.043375  val=0.110374
+[H=1] ep 151  train=0.043343  val=0.110402
+[H=1] ep 152  train=0.044676  val=0.109634
+[H=1] ep 153  train=0.044538  val=0.109105
+[H=1] ep 154  train=0.044479  val=0.109335
+[H=1] ep 155  train=0.044509  val=0.108737
+[H=1] ep 156  train=0.044340  val=0.109258
+[H=1] ep 157  train=0.044349  val=0.109415
+[H=1] ep 158  train=0.044164  val=0.109174
+[H=1] ep 159  train=0.044146  val=0.108934
+[H=1] ep 160  train=0.044148  val=0.108875
+[H=1] ep 161  train=0.044084  val=0.108757
+[H=1] ep 162  train=0.043958  val=0.108929
+[H=1] ep 163  train=0.043902  val=0.108684
+[H=1] ep 164  train=0.043919  val=0.108520
+[H=1] ep 165  train=0.043856  val=0.108511
+[H=1] ep 166  train=0.043756  val=0.108816
+[H=1] ep 167  train=0.043700  val=0.108589
+[H=1] ep 168  train=0.043708  val=0.108456
+[H=1] ep 169  train=0.043600  val=0.108352
+[H=1] ep 170  train=0.043610  val=0.109012
+[H=1] ep 171  train=0.043513  val=0.108408
+[H=1] ep 172  train=0.043485  val=0.108168
+[H=1] ep 173  train=0.043287  val=0.108381
+[H=1] ep 174  train=0.043201  val=0.108568
+[H=1] ep 175  train=0.043310  val=0.108241
+[H=1] ep 176  train=0.043232  val=0.108513
+[H=1] ep 177  train=0.043312  val=0.108164
+[H=1] ep 178  train=0.043240  val=0.107996
+[H=1] ep 179  train=0.043060  val=0.108687
+[H=1] ep 180  train=0.043085  val=0.107993
+[H=1] ep 181  train=0.042983  val=0.108665
+[H=1] ep 182  train=0.042914  val=0.108116
+[H=1] ep 183  train=0.042850  val=0.108263
+[H=1] ep 184  train=0.042835  val=0.108502
+[H=1] ep 185  train=0.042858  val=0.108383
+[H=1] ep 186  train=0.042799  val=0.107613
+[H=1] ep 187  train=0.042798  val=0.108421
+[H=1] ep 188  train=0.042804  val=0.108310
+[H=1] ep 189  train=0.042785  val=0.108392
+[H=1] ep 190  train=0.042647  val=0.108206
+[H=1] ep 191  train=0.042681  val=0.108340
+[H=1] ep 192  train=0.042531  val=0.108227
+[H=1] ep 193  train=0.042586  val=0.108134
+[H=1] ep 194  train=0.042454  val=0.108267
+[H=1] ep 195  train=0.042406  val=0.107962
+[H=1] ep 196  train=0.042445  val=0.108238
+[H=1] ep 197  train=0.042407  val=0.107912
+[H=1] ep 198  train=0.042293  val=0.108069
+[H=1] ep 199  train=0.042323  val=0.108025
+[H=1] ep 200  train=0.042141  val=0.108080
+[H=1] ep 201  train=0.042124  val=0.108329
+[H=1] ep 202  train=0.042322  val=0.108079
+[H=1] ep 203  train=0.042256  val=0.108482
+[H=1] ep 204  train=0.042144  val=0.108226
+[H=1] ep 205  train=0.042060  val=0.108223
+[H=1] ep 206  train=0.041987  val=0.108211
+[H=1] Early stopping at ep=206 (best ep=186, val=0.107613)
+[OK] checkpoints → experiments/artifacts/models_mps
+
+******** 05_eval_report ********
+[eval_report] Using CONFIG=configs/cpu.yaml,configs/overlays/transformer_only.yaml
+[eval_report] CWD=/Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo
+[eval_report] Python: Python 3.13.7 at /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python
+[eval_report] artifacts_dir=experiments/artifacts
+[eval_report] model_dir=experiments/artifacts/models_mps
+[eval_report] features_scaled_dir=experiments/artifacts/features_scaled_ps
+[eval_report] Launching: /Users/amitmakhija/Desktop/Model_Development/AQF_MP/repo/venv/bin/python -m e_training.eval_report
+
+[eval] Lock proposes 15 feature(s): ['CO_Concentration', 'NO2_Concentration', 'O3_Concentration', 'PM10_Concentration', 'SO2_Concentration', 'PM25_Concentration_lag1h', 'PM25_Concentration_lag3h', 'PM25_Concentration_lag6h', 'PM25_Concentration_lag12h', 'PM25_Concentration_lag24h', 'PM25_Concentration_lag48h', 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos']
+
+[test] rows=109,521  stations=175  time=[2015-03-31 01:00:00 → 2015-04-30 23:00:00]
+[test] NaN rate: y=0.013  X(sample)={CO_Concentration:0.018, NO2_Concentration:0.031, O3_Concentration:0.025, PM10_Concentration:0.038, SO2_Concentration:0.025, PM25_Concentration_lag1h:0.013, PM25_Concentration_lag3h:0.014, PM25_Concentration_lag6h:0.014}
+[test] Upper-bound windows (no NaN) H=1: ~46,314
+
+[eval] Horizon H=1
+[windows] loaded from shards: 45780 @ experiments/artifacts/seq/test/h=1 (with station_id)
+[eval] Effective input channels (C) = 15
+[eval] loaded train-time params from hybrid_h1_train_summary.json
+[load] experiments/artifacts/models_mps/hybrid_h1.pt
+[load] strict load OK
+[overall@H=1] rmse=26.9404  mae=17.2562  smape=35.6758  r2=0.5335
+[per-station@H=1] computed for 175 station(s)
+[save] per-station metrics → experiments/artifacts/reports/per_station_H1.csv (175 rows)
+[save] wrote experiments/artifacts/reports/preds_H1.csv  (45780 rows)
+
+[OK] wrote experiments/artifacts/reports/eval_report.json
+[summary@H=1] rmse=26.9404  mae=17.2562  smape=35.6758  r2=0.5335
+
+******************************** eval report done ********************************
+
+******** ALL DONE ********

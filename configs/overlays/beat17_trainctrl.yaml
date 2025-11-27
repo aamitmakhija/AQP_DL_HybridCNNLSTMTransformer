@@ -1,0 +1,5 @@
+# overlays/beat17_trainctrl.yaml
+dl:
+  epochs: 200
+  grad_clip: 0.5
+  batch_size: 64

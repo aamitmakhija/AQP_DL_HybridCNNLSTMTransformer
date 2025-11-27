@@ -1,0 +1,6 @@
+# overlays/beat17_relock.yaml
+features:
+  lock_enabled: false           # generate with full groups once
+  include_groups: ["aq","met","rolling","time"]
+  rolling_windows: [6,12,24,48,72,168]
+  lag_hours: [1,3,6,12,24,48]

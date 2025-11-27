@@ -1,0 +1,4 @@
+model:
+  hybrid:
+    impl: cnn_only
+    num_layers: 2   # still required in YAML but ignored (forced to 0)

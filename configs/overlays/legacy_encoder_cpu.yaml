@@ -1,0 +1,15 @@
+# configs/overlays/legacy_encoder_cpu.yaml
+# Minimal overlay to switch to the legacy encoder on top of configs/cpu.yaml
+
+sequence:
+  lookback: 96
+  stride: 2
+  horizon: [1]
+
+model:
+  hybrid:
+    impl: legacy_hybrid_encoder  # flip only this
+    d_model: 160                 # keep your “golden” dims
+    nhead: 4
+    num_layers: 2                # same depth as your best run
+    use_station_embedding: false

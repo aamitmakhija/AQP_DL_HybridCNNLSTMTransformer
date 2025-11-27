@@ -1,0 +1,47 @@
+# configs/overlays/beat17_cpu_push.yaml
+# single-shot CPU overlay on top of configs/cpu.yaml
+# hybrid_cnn_transformer
+dl:
+  # slightly smaller LR, slightly less weight decay for a smoother fit
+  lr: 1.5e-4
+  weight_decay: 1.0e-4
+
+  # let it train a bit longer before giving up
+  epochs: 320
+  patience: 20
+
+  # same scheduler type, but a bit more aggressive on plateaus
+  lr_scheduler:
+    name: reduce_on_plateau
+    factor: 0.5
+    patience: 5
+    min_lr: 5.0e-6
+
+  # keep everything else (device=mps, batch_size=64, huber, etc.) from cpu.yaml
+
+sequence:
+  # explicitly re-assert the “good” windowing
+  lookback: 96
+  stride: 2
+  horizon: [1]
+
+model:
+  hybrid:
+    # modest capacity bump without going crazy like the failed runs
+    cnn_channels: [64, 64, 64]
+    cnn_dropout: 0.12
+
+    d_model: 192      # 192 / 4 heads = 48 dim per head (safe)
+    nhead: 4
+    num_layers: 3     # one extra encoder layer
+
+    attn_dropout: 0.04
+    ffn_dropout: 0.12
+
+    # stay with the setup that worked: no station embedding
+    use_station_embedding: false
+
+    # small bump in recurrent capacity, still safe on CPU/MPS
+    lstm_hidden: 160
+    lstm_layers: 1
+    lstm_dropout: 0.10
